@@ -109,7 +109,7 @@ export class GlyphAtlas {
     const widths = [baseWdth, maxWdth];
     const colors = [
       INSTALLATION_CONFIG.textColor,
-      INSTALLATION_CONFIG.dwellTintColor,
+      INSTALLATION_CONFIG.interactionTintColor,
       INSTALLATION_CONFIG.residueTintColor,
       INSTALLATION_CONFIG.idleTintColor
     ];

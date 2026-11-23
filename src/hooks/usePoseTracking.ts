@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { FilesetResolver, PoseLandmarker, HandLandmarker } from '@mediapipe/tasks-vision';
 import type { TrackedPerson, TrackedHand, CameraStatus, PoseLandmark } from '../types';
 import { Point3DOneEuroFilter } from '../utils/oneEuroFilter';
-import { INSTALLATION_CONFIG } from '../config';
 
 export interface VisionTrackingState {
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -45,13 +44,6 @@ export function useVisionTracking(): VisionTrackingState {
     new Point3DOneEuroFilter(1.2, 0.008),
     new Point3DOneEuroFilter(1.2, 0.008),
     new Point3DOneEuroFilter(1.2, 0.008)
-  ]);
-
-  const prevPersonPosRef = useRef<{ x: number; y: number; time: number; stillTime: number }[]>([
-    { x: 0.5, y: 0.35, time: 0, stillTime: 0 },
-    { x: 0.5, y: 0.35, time: 0, stillTime: 0 },
-    { x: 0.5, y: 0.35, time: 0, stillTime: 0 },
-    { x: 0.5, y: 0.35, time: 0, stillTime: 0 }
   ]);
 
   const prevHandsPosRef = useRef<{ x: number; y: number; time: number }[]>([
@@ -240,9 +232,8 @@ export function useVisionTracking(): VisionTrackingState {
             const step = stepCounterRef.current++;
 
             try {
-              const runHands = INSTALLATION_CONFIG.enableHandTracking && handLandmarker;
-              // Staggered alternation only if hands are enabled; otherwise run Pose continuously
-              if (runHands && step % 2 === 0) {
+              // Staggered alternation: Hands on even frames, Pose on odd frames
+              if (step % 2 === 0 && handLandmarker) {
                 const handResults = handLandmarker.detectForVideo(video, now);
                 const handsLandmarks = handResults.landmarks;
 
@@ -367,46 +358,11 @@ export function useVisionTracking(): VisionTrackingState {
 
                     const depth = Math.max(0, Math.min(1, (shoulderSpan - 0.07) / (0.28 - 0.07)));
 
-                    let velocity = 0;
-                    let isStill = false;
-                    let stillTime = 0;
-
-                    if (nosePos.visible) {
-                      const prev = prevPersonPosRef.current[pIdx];
-                      if (prev && prev.time > 0) {
-                        const dtSec = Math.max(0.016, (now - prev.time) / 1000);
-                        const screenW = typeof window !== 'undefined' ? window.innerWidth : 1920;
-                        const screenH = typeof window !== 'undefined' ? window.innerHeight : 1080;
-                        const dx = (nosePos.x - prev.x) * screenW;
-                        const dy = (nosePos.y - prev.y) * screenH;
-                        velocity = Math.hypot(dx, dy) / dtSec;
-                        isStill = velocity < INSTALLATION_CONFIG.stillnessVelocityThreshold;
-
-                        if (isStill) {
-                          stillTime = prev.stillTime + dtSec;
-                        } else {
-                          stillTime = 0;
-                        }
-                      }
-
-                      prevPersonPosRef.current[pIdx] = {
-                        x: nosePos.x,
-                        y: nosePos.y,
-                        time: now,
-                        stillTime
-                      };
-                    }
-
                     detectedPeople.push({
                       id: pIdx + 1,
                       nosePos,
                       shoulderWidth: shoulderSpan,
                       depth,
-                      stillTime,
-                      isStill,
-                      velocity,
-                      targetWordId: null,
-                      targetWordText: null,
                       influencePoints: [],
                       landmarks: mirrored,
                       active: true,

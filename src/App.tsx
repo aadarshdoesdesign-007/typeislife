@@ -4,99 +4,88 @@ import { DebugOverlay } from './components/DebugOverlay';
 import { MechanicsPanel } from './components/MechanicsPanel';
 import { useVisionTracking } from './hooks/usePoseTracking';
 import { audioEngine } from './services/audioEngine';
-import { soakLogger } from './utils/soakLogger';
-import { INSTALLATION_CONFIG, DWELL_SECONDS } from './config';
 import type {
+  FontAxisState,
+  TrackedPerson,
+  TrackedHand,
+  PoseLandmark,
   MechanicsSwitches,
   WallVisualizations,
-  MechanicsLiveTelemetry,
-  TrackedPerson,
-  TrackedHand
+  MechanicsLiveTelemetry
 } from './types';
+import { INSTALLATION_CONFIG } from './config';
+import { soakLogger } from './utils/soakLogger';
+
+function createDummyLandmarks(x: number, y: number): PoseLandmark[] {
+  const lms: PoseLandmark[] = [];
+  for (let i = 0; i < 21; i++) {
+    lms.push({ x, y, z: 0 });
+  }
+  return lms;
+}
 
 export function App() {
   const [fps, setFps] = useState<number>(60);
-  const [avgAxes, setAvgAxes] = useState<{ wght: number; wdth: number }>({
+  const [avgAxes, setAvgAxes] = useState<FontAxisState>({
     wght: INSTALLATION_CONFIG.baseWght,
     wdth: INSTALLATION_CONFIG.baseWdth
   });
 
   const [timings, setTimings] = useState({
     detectionMs: 0,
-    updateMs: 0.4,
-    renderMs: 2.1
+    updateMs: 0.5,
+    renderMs: 1.2
   });
 
-  // EXHIBITION PASS: Normal mode has zero tooling, panels, or overlays visible
+  // Tooling visibility: hidden by default in normal exhibition mode
   const [isDebugOpen, setIsDebugOpen] = useState<boolean>(false);
   const [isMechanicsPanelOpen, setIsMechanicsPanelOpen] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [showInfluencePoints, setShowInfluencePoints] = useState<boolean>(true);
+  const [showResidueHeatmap, setShowResidueHeatmap] = useState<boolean>(false);
+
+  // Mechanics isolation switches
+  const [mechanicsSwitches, setMechanicsSwitches] = useState<MechanicsSwitches>({
+    gestures: true,
+    speedRipple: true,
+    headTracking: true,
+    semanticMass: true,
+    residue: true,
+    attractMode: true,
+    sound: true,
+    hands: true
+  });
+
+  // Wall visualizations (active only while panel open)
+  const [wallVisualizations, setWallVisualizations] = useState<WallVisualizations>({
+    sourceTint: false,
+    residueHeatmap: false,
+    influenceDots: false
+  });
+
+  // Live telemetry for Mechanics panel
+  const [telemetry, setTelemetry] = useState<MechanicsLiveTelemetry>({
+    gestureStateText: 'None',
+    handSpeedText: '0.00',
+    headPosText: 'None',
+    trackedHandsCount: 0,
+    meanResidue: 0,
+    idleStatus: 'Idle (0s)',
+    meanWeight: 200,
+    droneActive: false
+  });
+
+  // Concept test modes: 'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle'
+  // Always starts in 'live' mode on page load and reload. Never persists test mode.
+  const [testMode, setTestMode] = useState<'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle'>('live');
+  const [testCountdown, setTestCountdown] = useState<number>(0);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(
     typeof document !== 'undefined' ? Boolean(document.fullscreenElement) : false
   );
 
-  // 3-Second visual fade-in on installation boot
-  const [isMounted, setIsMounted] = useState<boolean>(false);
-
-  // 8 Core Installation Mechanics Switches (Live on/off isolation)
-  const [mechanicsSwitches, setMechanicsSwitches] = useState<MechanicsSwitches>({
-    dwellBuild: true,
-    settle: true,
-    residue: true,
-    semanticMass: true,
-    headTracking: true,
-    idleLife: true,
-    sound: true,
-    hands: false // Disabled flag by default
-  });
-
-  // Wall Visualizations (Only active while Mechanics Panel is open)
-  const [wallVisualizations, setWallVisualizations] = useState<WallVisualizations>({
-    sourceTint: false,
-    dwellRings: true,
-    residueHeatmap: false,
-    wordLabels: true
-  });
-
-  // Telemetry reported from canvas to mechanics panel
-  const [telemetry, setTelemetry] = useState<MechanicsLiveTelemetry>({
-    dwellStatus: 'Waiting for visitor',
-    settledWordsCount: 0,
-    settledList: 'None',
-    meanResidue: 0,
-    semanticMultiplierText: 'None',
-    headScreenPosText: 'No visitors',
-    trackedVisitorsCount: 0,
-    idleLifeStatus: 'Waiting (Visitors active)',
-    droneLevel: 0,
-    lastToneText: 'None',
-    currentPan: 0
-  });
-
-  // Scripted Visitor Simulation Mode
-  const [isSimulating, setIsSimulating] = useState<boolean>(false);
-  const [simulatedTargetWord, setSimulatedTargetWord] = useState<string>('HEAVY');
-  const [simulationSecondsLeft, setSimulationSecondsLeft] = useState<number>(0);
-  const simStartTimeRef = useRef<number>(0);
-  const simCountdownTimerRef = useRef<number | null>(null);
-  const simEndTimeoutRef = useRef<number | null>(null);
-
   const canvasRef = useRef<TypographyCanvasRef | null>(null);
-
-  // Vision tracking hook (GPU Delegate, Camera error handling & auto-retry)
-  const {
-    videoRef,
-    videoElement,
-    cameraStatus,
-    latestPeopleRef,
-    latestHandsRef,
-    poseFps,
-    detectionMs,
-    activeDelegate
-  } = useVisionTracking();
-
-  const effectiveTrackedPeopleRef = useRef<TrackedPerson[]>([]);
-  const effectiveTrackedHandsRef = useRef<TrackedHand[]>([]);
+  const revertTimerRef = useRef<number | null>(null);
+  const countdownIntervalRef = useRef<number | null>(null);
 
   // Watchdog: Restarts the page if the render loop stalls for 5s
   const lastWatchdogBeatRef = useRef<number>(Date.now());
@@ -110,66 +99,6 @@ export function App() {
     }, 1000);
 
     return () => clearInterval(watchdogInterval);
-  }, []);
-
-  // Sync tracked people with simulation override if active
-  useEffect(() => {
-    let animId: number;
-    const syncEffectivePpl = () => {
-      lastWatchdogBeatRef.current = Date.now();
-      const now = performance.now();
-
-      if (isSimulating) {
-        // Map chosen word to representative screen coordinate
-        let targetX = 0.5;
-        let targetY = 0.45;
-        const wUpper = simulatedTargetWord.toUpperCase();
-        if (wUpper === 'NOTHING') { targetX = 0.26; targetY = 0.20; }
-        else if (wUpper === 'HERE') { targetX = 0.36; targetY = 0.32; }
-        else if (wUpper === 'IS') { targetX = 0.54; targetY = 0.32; }
-        else if (wUpper === 'HEAVY') { targetX = 0.32; targetY = 0.46; }
-        else if (wUpper === 'UNTIL') { targetX = 0.50; targetY = 0.60; }
-        else if (wUpper === 'SOMEONE') { targetX = 0.38; targetY = 0.72; }
-        else if (wUpper === 'STAYS') { targetX = 0.62; targetY = 0.86; }
-
-        const elapsedSec = (now - simStartTimeRef.current) / 1000;
-
-        effectiveTrackedPeopleRef.current = [{
-          id: 1,
-          nosePos: { x: targetX, y: targetY, visible: true },
-          shoulderWidth: 0.24,
-          depth: 0.90,
-          stillTime: elapsedSec,
-          isStill: true,
-          velocity: 2.1,
-          targetWordId: null,
-          targetWordText: simulatedTargetWord,
-          influencePoints: [],
-          landmarks: [],
-          active: true,
-          lastSeen: now
-        }];
-        effectiveTrackedHandsRef.current = [];
-      } else {
-        effectiveTrackedPeopleRef.current = latestPeopleRef.current;
-        effectiveTrackedHandsRef.current = latestHandsRef.current;
-      }
-
-      animId = requestAnimationFrame(syncEffectivePpl);
-    };
-
-    animId = requestAnimationFrame(syncEffectivePpl);
-    return () => cancelAnimationFrame(animId);
-  }, [isSimulating, simulatedTargetWord, latestPeopleRef, latestHandsRef]);
-
-  useEffect(() => {
-    setTimings((prev) => ({ ...prev, detectionMs }));
-  }, [detectionMs]);
-
-  // 3-second visual fade-in trigger on mount
-  useEffect(() => {
-    const t = window.setTimeout(() => setIsMounted(true), 50);
-    return () => clearTimeout(t);
   }, []);
 
   // Screen Wake Lock API (prevents installation screen sleep)
@@ -194,60 +123,219 @@ export function App() {
     };
   }, []);
 
-  // Track fullscreen changes: in kiosk mode, disable all debug & mechanics panels
+  // Auto-revert simulated test mode to Live after 10 seconds
+  useEffect(() => {
+    if (revertTimerRef.current) window.clearTimeout(revertTimerRef.current);
+    if (countdownIntervalRef.current) window.clearInterval(countdownIntervalRef.current);
+
+    if (testMode !== 'live') {
+      setTestCountdown(10);
+      const startTime = performance.now();
+
+      countdownIntervalRef.current = window.setInterval(() => {
+        const elapsed = Math.floor((performance.now() - startTime) / 1000);
+        const rem = Math.max(0, 10 - elapsed);
+        setTestCountdown(rem);
+        if (rem <= 0) {
+          if (countdownIntervalRef.current) window.clearInterval(countdownIntervalRef.current);
+        }
+      }, 250);
+
+      revertTimerRef.current = window.setTimeout(() => {
+        setTestMode('live');
+      }, 10000);
+    } else {
+      setTestCountdown(0);
+    }
+
+    return () => {
+      if (revertTimerRef.current) window.clearTimeout(revertTimerRef.current);
+      if (countdownIntervalRef.current) window.clearInterval(countdownIntervalRef.current);
+    };
+  }, [testMode]);
+
+  // Track fullscreen changes and lock out test mode in kiosk/fullscreen mode
   useEffect(() => {
     const handleFsChange = () => {
       const isFs = Boolean(document.fullscreenElement);
       setIsFullscreen(isFs);
       if (isFs) {
+        setTestMode('live');
         setIsDebugOpen(false);
         setIsMechanicsPanelOpen(false);
-        if (isSimulating) {
-          setIsSimulating(false);
-          canvasRef.current?.clearAllResidue();
-        }
       }
     };
 
     document.addEventListener('fullscreenchange', handleFsChange);
     return () => document.removeEventListener('fullscreenchange', handleFsChange);
-  }, [isSimulating]);
+  }, []);
 
-  // Scripted Visitor Simulation Handler: runs for DWELL_SECONDS so it reaches full settle
-  const handleSimulateVisitor = useCallback((word: string) => {
-    if (isFullscreen) return;
-    if (simCountdownTimerRef.current) clearInterval(simCountdownTimerRef.current);
-    if (simEndTimeoutRef.current) clearTimeout(simEndTimeoutRef.current);
+  // Vision tracking hook (GPU Delegate, Camera error handling & auto-retry)
+  const {
+    videoRef,
+    videoElement,
+    cameraStatus,
+    latestPeopleRef,
+    latestHandsRef,
+    poseFps,
+    detectionMs,
+    activeDelegate
+  } = useVisionTracking();
 
-    const simDuration = DWELL_SECONDS;
-    setSimulatedTargetWord(word);
-    setIsSimulating(true);
-    setSimulationSecondsLeft(simDuration);
-    simStartTimeRef.current = performance.now();
+  const effectiveTrackedPeopleRef = useRef<TrackedPerson[]>([]);
+  const effectiveTrackedHandsRef = useRef<TrackedHand[]>([]);
 
-    const startTime = performance.now();
-    simCountdownTimerRef.current = window.setInterval(() => {
-      const elapsed = Math.floor((performance.now() - startTime) / 1000);
-      const rem = Math.max(0, simDuration - elapsed);
-      setSimulationSecondsLeft(rem);
-      if (rem <= 0 && simCountdownTimerRef.current) {
-        clearInterval(simCountdownTimerRef.current);
+  const handleSetTestMode = (mode: 'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle') => {
+    if (isFullscreen && mode !== 'live') return;
+    setTestMode(mode);
+  };
+
+  const handleClearResidue = useCallback(() => {
+    canvasRef.current?.clearAllResidue();
+  }, []);
+
+  const handleToggleMechanic = useCallback((key: keyof MechanicsSwitches) => {
+    setMechanicsSwitches((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const handleToggleVisualization = useCallback((key: keyof WallVisualizations) => {
+    setWallVisualizations((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  useEffect(() => {
+    let animId: number;
+    const syncRef = () => {
+      lastWatchdogBeatRef.current = Date.now();
+      const now = performance.now();
+      if (testMode === 'idle') {
+        effectiveTrackedPeopleRef.current = [];
+        effectiveTrackedHandsRef.current = [];
+      } else if (testMode === 'fist') {
+        // Fist gesture: small concentrated radius, peak wght 900
+        effectiveTrackedPeopleRef.current = [{
+          id: 1,
+          nosePos: { x: 0.5, y: 0.35, visible: true },
+          shoulderWidth: 0.22,
+          depth: 0.75,
+          influencePoints: [],
+          landmarks: [],
+          active: true,
+          lastSeen: now
+        }];
+        effectiveTrackedHandsRef.current = [{
+          id: 1,
+          palmX: 0.38,
+          palmY: 0.44,
+          handSpan: 0.22,
+          depth: 1.0,
+          isFist: true,
+          isOpen: false,
+          rawIsFist: true,
+          gestureChangedAt: now,
+          speed: 0.02,
+          velocityX: 0,
+          velocityY: 0,
+          landmarks: createDummyLandmarks(0.38, 0.44),
+          active: true,
+          lastSeen: now
+        }];
+      } else if (testMode === 'two_hands') {
+        // Two hands moving apart: stretches width axis between them
+        effectiveTrackedPeopleRef.current = [{
+          id: 1,
+          nosePos: { x: 0.5, y: 0.35, visible: true },
+          shoulderWidth: 0.24,
+          depth: 0.75,
+          influencePoints: [],
+          landmarks: [],
+          active: true,
+          lastSeen: now
+        }];
+        effectiveTrackedHandsRef.current = [
+          {
+            id: 1,
+            palmX: 0.20,
+            palmY: 0.45,
+            handSpan: 0.20,
+            depth: 0.85,
+            isFist: false,
+            isOpen: true,
+            rawIsFist: false,
+            gestureChangedAt: now,
+            speed: 0.02,
+            velocityX: 0,
+            velocityY: 0,
+            landmarks: createDummyLandmarks(0.20, 0.45),
+            active: true,
+            lastSeen: now
+          },
+          {
+            id: 2,
+            palmX: 0.80,
+            palmY: 0.45,
+            handSpan: 0.20,
+            depth: 0.85,
+            isFist: false,
+            isOpen: true,
+            rawIsFist: false,
+            gestureChangedAt: now,
+            speed: 0.02,
+            velocityX: 0,
+            velocityY: 0,
+            landmarks: createDummyLandmarks(0.80, 0.45),
+            active: true,
+            lastSeen: now
+          }
+        ];
+      } else if (testMode === 'wave_residue') {
+        // Simulates hand waving across and moving away, leaving residue
+        const waveX = 0.5 + Math.sin(now * 0.002) * 0.35;
+        effectiveTrackedHandsRef.current = [{
+          id: 1,
+          palmX: waveX,
+          palmY: 0.45,
+          handSpan: 0.24,
+          depth: 0.95,
+          isFist: false,
+          isOpen: true,
+          rawIsFist: false,
+          gestureChangedAt: now,
+          speed: 0.4,
+          velocityX: 0.3,
+          velocityY: 0,
+          landmarks: createDummyLandmarks(waveX, 0.45),
+          active: true,
+          lastSeen: now
+        }];
+        effectiveTrackedPeopleRef.current = [{
+          id: 1,
+          nosePos: { x: 0.5, y: 0.35, visible: true },
+          shoulderWidth: 0.22,
+          depth: 0.75,
+          influencePoints: [],
+          landmarks: [],
+          active: true,
+          lastSeen: now
+        }];
+      } else {
+        effectiveTrackedPeopleRef.current = latestPeopleRef.current;
+        effectiveTrackedHandsRef.current = latestHandsRef.current;
       }
-    }, 250);
+      animId = requestAnimationFrame(syncRef);
+    };
+    animId = requestAnimationFrame(syncRef);
+    return () => cancelAnimationFrame(animId);
+  }, [testMode, latestPeopleRef, latestHandsRef]);
 
-    // Run for DWELL_SECONDS + 1.5s so it holds full settle before auto-reverting
-    simEndTimeoutRef.current = window.setTimeout(() => {
-      setIsSimulating(false);
-      setSimulationSecondsLeft(0);
-      canvasRef.current?.clearAllResidue();
-    }, (simDuration + 1.5) * 1000);
-  }, [isFullscreen]);
+  useEffect(() => {
+    setTimings((prev) => ({ ...prev, detectionMs }));
+  }, [detectionMs]);
 
   // Global key bindings:
-  // - Ctrl+Shift+D: Toggle Debug Overlay (disabled in kiosk mode)
-  // - Ctrl+Shift+H: Toggle Mechanics Isolation Panel (disabled in kiosk mode)
-  // - R: Clear residue instantly
-  // - F: Toggle fullscreen kiosk mode
+  // - Ctrl+Shift+D or D: Toggle Debug Overlay
+  // - Ctrl+Shift+H: Toggle Mechanics Isolation Panel
+  // - R: Clear residue memory
+  // - F: Toggle fullscreen
   // - M: Toggle mute
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -261,95 +349,100 @@ export function App() {
       } else if (isCtrlOrMeta && e.shiftKey && (e.key === 'H' || e.key === 'h')) {
         e.preventDefault();
         if (!isFullscreen) setIsMechanicsPanelOpen((prev) => !prev);
+      } else if (e.key === 'd' || e.key === 'D') {
+        if (!isCtrlOrMeta && !e.altKey) {
+          if (!isFullscreen) setIsDebugOpen((prev) => !prev);
+        }
       } else if (e.key === 'r' || e.key === 'R') {
-        // Clear residue instantly (debug key)
-        canvasRef.current?.clearAllResidue();
+        if (!isCtrlOrMeta && !e.altKey) {
+          handleClearResidue();
+        }
       } else if (e.key === 'f' || e.key === 'F') {
-        if (!document.fullscreenElement) {
-          document.documentElement.requestFullscreen().catch(() => {});
-        } else {
-          document.exitFullscreen().catch(() => {});
+        if (!isCtrlOrMeta && !e.altKey) {
+          if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen().catch(() => {});
+          } else {
+            document.exitFullscreen().catch(() => {});
+          }
         }
       } else if (e.key === 'm' || e.key === 'M') {
-        const muted = audioEngine.toggleMute();
-        setIsMuted(muted);
+        if (!isCtrlOrMeta && !e.altKey) {
+          audioEngine.initContext();
+          const muted = audioEngine.toggleMute();
+          setIsMuted(muted);
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isFullscreen]);
-
-  const handleToggleMechanic = (key: keyof MechanicsSwitches) => {
-    setMechanicsSwitches((prev) => ({
-      ...prev,
-      [key]: !prev[key]
-    }));
-  };
-
-  const handleToggleVisualization = (key: keyof WallVisualizations) => {
-    setWallVisualizations((prev) => ({
-      ...prev,
-      [key]: !prev[key]
-    }));
-  };
+  }, [isFullscreen, handleClearResidue]);
 
   return (
-    <main
-      style={{
-        position: 'relative',
-        width: '100vw',
-        height: '100vh',
-        backgroundColor: '#000000',
-        overflow: 'hidden',
-        cursor: 'none', // Global hidden cursor
-        opacity: isMounted ? 1 : 0,
-        transition: 'opacity 3s ease-in-out' // 3-second fade-in on start
-      }}
-    >
-      {/* Hidden offscreen video decoder keeping webcam frames alive at 30fps */}
+    <div style={{ position: 'relative', width: '100vw', height: '100vh', background: '#000000', overflow: 'hidden' }}>
+      {/* Hidden webcam element for MediaPipe input */}
       <video
         ref={videoRef}
         playsInline
         muted
-        autoPlay
         style={{
-          position: 'fixed',
-          top: -9999,
-          left: -9999,
-          width: 640,
-          height: 480,
+          position: 'absolute',
           opacity: 0,
           pointerEvents: 'none',
-          zIndex: -1000
+          width: 640,
+          height: 480,
+          top: -9999,
+          left: -9999
         }}
       />
 
-      {/* Main Exhibition Typographic Installation */}
+      {/* Main Exhibition Typography Canvas */}
       <TypographyCanvas
         ref={canvasRef}
         trackedPeopleRef={effectiveTrackedPeopleRef}
         trackedHandsRef={effectiveTrackedHandsRef}
+        isDebugActive={isDebugOpen}
+        showInfluencePoints={showInfluencePoints}
+        showResidueHeatmap={showResidueHeatmap}
         isMechanicsPanelOpen={isMechanicsPanelOpen}
         mechanicsSwitches={mechanicsSwitches}
         wallVisualizations={wallVisualizations}
-        onFpsUpdate={(newFps) => {
-          setFps(newFps);
-          soakLogger.update(newFps, avgAxes.wght, effectiveTrackedPeopleRef.current.length);
-        }}
+        onFpsUpdate={setFps}
         onMetricsUpdate={(wght, wdth) => {
           setAvgAxes({ wght, wdth });
           soakLogger.update(fps, wght, effectiveTrackedPeopleRef.current.length);
         }}
-        onTimingUpdate={(updateMs, renderMs) => {
-          setTimings((prev) => ({ ...prev, updateMs, renderMs }));
-        }}
+        onTimingUpdate={(updateMs, renderMs) => setTimings((prev) => ({ ...prev, updateMs, renderMs }))}
         onTelemetryUpdate={setTelemetry}
       />
 
-      {/* Mechanics Isolation & Tuning Panel [Ctrl+Shift+H] */}
+      {/* Concept & Profiler Debug Overlay (Toggle via Ctrl+Shift+D or D) */}
+      <DebugOverlay
+        isVisible={isDebugOpen}
+        fps={fps}
+        poseFps={poseFps}
+        timings={timings}
+        activeDelegate={activeDelegate}
+        currentAxes={avgAxes}
+        avgAxes={avgAxes}
+        trackedPeople={effectiveTrackedPeopleRef.current}
+        trackedHands={effectiveTrackedHandsRef.current}
+        cameraStatus={cameraStatus}
+        videoElement={videoElement}
+        testMode={testMode}
+        testCountdown={testCountdown}
+        isFullscreen={isFullscreen}
+        onSetTestMode={handleSetTestMode}
+        showInfluencePoints={showInfluencePoints}
+        onToggleShowInfluencePoints={() => setShowInfluencePoints((prev) => !prev)}
+        showResidueHeatmap={showResidueHeatmap}
+        onToggleShowResidueHeatmap={() => setShowResidueHeatmap((prev) => !prev)}
+        isMuted={isMuted}
+      />
+
+      {/* Mechanics Isolation Panel (Toggle via Ctrl+Shift+H) */}
       <MechanicsPanel
-        isOpen={isMechanicsPanelOpen && !isFullscreen}
+        isOpen={isMechanicsPanelOpen}
         onClose={() => setIsMechanicsPanelOpen(false)}
         mechanicsSwitches={mechanicsSwitches}
         onToggleMechanic={handleToggleMechanic}
@@ -358,35 +451,14 @@ export function App() {
         telemetry={telemetry}
         fps={fps}
         renderMs={timings.renderMs}
-        onSimulateVisitor={handleSimulateVisitor}
-        isSimulating={isSimulating}
-        simulationSecondsLeft={simulationSecondsLeft}
-        simulatedTargetWord={simulatedTargetWord}
-        onClearResidue={() => canvasRef.current?.clearAllResidue()}
+        testMode={testMode}
+        testCountdown={testCountdown}
+        onSetTestMode={handleSetTestMode}
+        onClearResidue={handleClearResidue}
       />
-
-      {/* Debug Profiler & Mirrored Camera Skeleton [Ctrl+Shift+D] */}
-      <DebugOverlay
-        isVisible={isDebugOpen && !isFullscreen}
-        fps={fps}
-        poseFps={poseFps}
-        timings={timings}
-        activeDelegate={activeDelegate}
-        currentAxes={{ wght: avgAxes.wght, wdth: avgAxes.wdth }}
-        avgAxes={avgAxes}
-        trackedPeople={effectiveTrackedPeopleRef.current}
-        trackedHands={effectiveTrackedHandsRef.current}
-        cameraStatus={cameraStatus}
-        videoElement={videoElement || videoRef.current}
-        isFullscreen={isFullscreen}
-        showInfluencePoints={false}
-        onToggleShowInfluencePoints={() => {}}
-        showResidueHeatmap={false}
-        onToggleShowResidueHeatmap={() => {}}
-        isMuted={isMuted}
-      />
-    </main>
+    </div>
   );
 }
 
 export default App;
+

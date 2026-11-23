@@ -1,23 +1,16 @@
 import React, { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from 'react';
 import type {
   CharacterItem,
-  WordItem,
-  TextureFragmentItem,
+  FontAxisState,
   TrackedPerson,
   TrackedHand,
   MechanicsSwitches,
   WallVisualizations,
-  MechanicsLiveTelemetry
+  MechanicsLiveTelemetry,
+  DominantContributor
 } from '../types';
-import {
-  INSTALLATION_TEXT_LINES,
-  LINE_INDENT_PERCENTAGES,
-  WORD_RESTING_AXES,
-  BACKGROUND_TEXTURE_FRAGMENTS,
-  INSTALLATION_CONFIG,
-  SEMANTIC_MASS_TABLE,
-  DEFAULT_SEMANTIC_CONFIG
-} from '../config';
+import { EXHIBITION_TEXT_LINES } from '../constants/text';
+import { INSTALLATION_CONFIG, SEMANTIC_MASS_TABLE, DEFAULT_SEMANTIC_CONFIG } from '../config';
 import { audioEngine } from '../services/audioEngine';
 import { glyphAtlas } from '../utils/glyphAtlas';
 
@@ -26,68 +19,85 @@ export interface TypographyCanvasRef {
 }
 
 interface TypographyCanvasProps {
+  manualAxes?: FontAxisState;
   trackedPeopleRef: React.MutableRefObject<TrackedPerson[]>;
   trackedHandsRef: React.MutableRefObject<TrackedHand[]>;
-  isMechanicsPanelOpen: boolean;
-  mechanicsSwitches: MechanicsSwitches;
-  wallVisualizations: WallVisualizations;
+  isDebugActive?: boolean;
+  showInfluencePoints?: boolean;
+  showResidueHeatmap?: boolean;
+  isMechanicsPanelOpen?: boolean;
+  mechanicsSwitches?: MechanicsSwitches;
+  wallVisualizations?: WallVisualizations;
   onFpsUpdate?: (fps: number) => void;
-  onMetricsUpdate?: (avgWght: number, avgWdth: number) => void;
+  onMetricsUpdate?: (meanWght: number, meanWdth: number) => void;
   onTimingUpdate?: (updateMs: number, renderMs: number) => void;
   onTelemetryUpdate?: (telemetry: MechanicsLiveTelemetry) => void;
 }
 
+const DEFAULT_MECHANICS_SWITCHES: MechanicsSwitches = {
+  gestures: true,
+  speedRipple: true,
+  headTracking: true,
+  semanticMass: true,
+  residue: true,
+  attractMode: true,
+  sound: true,
+  hands: true
+};
+
+const DEFAULT_WALL_VISUALIZATIONS: WallVisualizations = {
+  sourceTint: false,
+  residueHeatmap: false,
+  influenceDots: false
+};
+
 export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvasProps>(({
+  manualAxes,
   trackedPeopleRef,
-  trackedHandsRef: _unusedHands,
-  isMechanicsPanelOpen,
-  mechanicsSwitches,
-  wallVisualizations,
+  trackedHandsRef,
+  isDebugActive = false,
+  showInfluencePoints = false,
+  showResidueHeatmap = false,
+  isMechanicsPanelOpen = false,
+  mechanicsSwitches = DEFAULT_MECHANICS_SWITCHES,
+  wallVisualizations = DEFAULT_WALL_VISUALIZATIONS,
   onFpsUpdate,
   onMetricsUpdate,
   onTimingUpdate,
   onTelemetryUpdate
 }, ref) => {
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
   const charactersRef = useRef<CharacterItem[][]>([]);
-  const wordsRef = useRef<WordItem[]>([]);
-  const textureFragmentsRef = useRef<TextureFragmentItem[]>([]);
-
+  const currentFontSizeRef = useRef<number>(32);
   const isFontLoadedRef = useRef<boolean>(false);
+  const [fontReady, setFontReady] = useState<boolean>(false);
+
   const animationFrameIdRef = useRef<number | null>(null);
+  const lastRenderTimeRef = useRef<number>(performance.now());
   const frameCountRef = useRef<number>(0);
   const lastFpsTimeRef = useRef<number>(performance.now());
-  const lastRenderTimeRef = useRef<number>(performance.now());
 
-  const presenceFadeRef = useRef<number>(0);
+  // Attract mode & idle timer
   const idleDurationSecRef = useRef<number>(0);
-  const currentFontSizeRef = useRef<number>(84);
+  const presenceFadeRef = useRef<number>(0.0);
 
-  const [fontReady, setFontReady] = useState(false);
-
-  // Clear all residue instantly (triggered via R key or simulation exit)
-  const clearAllResidue = useCallback(() => {
-    charactersRef.current.forEach((line) => {
-      line.forEach((ch) => {
-        ch.residue = 0;
-      });
-    });
-    wordsRef.current.forEach((w) => {
-      w.isSettled = false;
-      w.settledAt = 0;
-      w.settledTimeLeft = 0;
-      w.dwellBuild = 0;
-    });
-  }, []);
-
+  // Expose imperative methods (e.g. clearAllResidue)
   useImperativeHandle(ref, () => ({
-    clearAllResidue
-  }), [clearAllResidue]);
+    clearAllResidue: () => {
+      charactersRef.current.forEach((lineChars) => {
+        lineChars.forEach((ch) => {
+          ch.residue = 0;
+        });
+      });
+    }
+  }), []);
 
+  // Ensure Roboto Flex font is loaded
   useEffect(() => {
     if ('fonts' in document) {
-      document.fonts.load('900 84px "Roboto Flex Variable"')
+      document.fonts
+        .load(`400 32px "Roboto Flex Variable"`)
         .then(() => {
           isFontLoadedRef.current = true;
           setFontReady(true);
@@ -102,198 +112,174 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
     }
   }, []);
 
-  // Compute fixed slot layout with resting hierarchy, ragged indents, and background texture
-  const computeInstallationLayout = useCallback((width: number, height: number) => {
+  // Compute fixed slot layout: guarantees paragraph fits on 1920x1080 and 1280x720 with margins
+  const computeFixedSlotLayout = useCallback((width: number, height: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     const cfg = INSTALLATION_CONFIG;
-    const lines = INSTALLATION_TEXT_LINES;
+    const lines = EXHIBITION_TEXT_LINES;
 
-    // Sizing: text block commands the wall (~86% height with tighter leading)
-    const targetBlockHeight = height * cfg.blockHeightRatio;
-    const computedLineHeight = targetBlockHeight / lines.length;
-    const responsiveFontSize = Math.floor(Math.max(42, Math.min(160, computedLineHeight / cfg.lineSpacing)));
+    // Target boundaries:
+    // Width target: maximum 84% of canvas width (leaves >= 8% margin on left and 8% on right)
+    // Height target: maximum 80% of canvas height (leaves >= 10% margin on top and 10% on bottom)
+    const maxLineLen = Math.max(...lines.map((l) => l.length));
+
+    let candidateFontSize = Math.floor(
+      Math.min(
+        (width * 0.84) / (maxLineLen * 0.78),
+        (height * 0.80) / (lines.length * cfg.lineSpacing)
+      )
+    );
+    candidateFontSize = Math.max(16, candidateFontSize);
+
+    // Measure maximum line width with Canvas context at candidateFontSize
+    ctx.font = `${cfg.maxWght} ${candidateFontSize}px "Roboto Flex Variable", sans-serif`;
+    if ('fontVariationSettings' in ctx) {
+      (ctx as any).fontVariationSettings = `'wght' ${cfg.maxWght}, 'wdth' ${cfg.maxWdth}`;
+    }
+
+    let maxMeasuredWidth = 0;
+    lines.forEach((lineText) => {
+      let lineW = 0;
+      for (let c = 0; c < lineText.length; c++) {
+        const ch = lineText[c];
+        if (ch === ' ') {
+          lineW += candidateFontSize * 0.28;
+        } else {
+          lineW += ctx.measureText(ch).width + cfg.slotPadding;
+        }
+      }
+      if (lineW > maxMeasuredWidth) maxMeasuredWidth = lineW;
+    });
+
+    const maxAllowedWidth = width * 0.84;
+    if (maxMeasuredWidth > maxAllowedWidth && maxMeasuredWidth > 0) {
+      candidateFontSize = Math.floor(candidateFontSize * (maxAllowedWidth / maxMeasuredWidth));
+    }
+
+    const responsiveFontSize = Math.max(15, candidateFontSize);
     currentFontSizeRef.current = responsiveFontSize;
 
     const dpr = window.devicePixelRatio || 1;
     glyphAtlas.init(responsiveFontSize, dpr);
+    glyphAtlas.warmCache(lines);
 
-    // Warm cache with both main installation lines and texture fragments
-    const allTextToWarm = [...lines, ...BACKGROUND_TEXTURE_FRAGMENTS.map((f) => f.text)];
-    glyphAtlas.warmCache(allTextToWarm);
+    const lineHeight = responsiveFontSize * cfg.lineSpacing;
+    const blockTotalHeight = lines.length * lineHeight;
+    const startY = (height - blockTotalHeight) / 2 + responsiveFontSize * 0.85;
 
-    const actualLineHeight = responsiveFontSize * cfg.lineSpacing;
-    const blockTotalHeight = lines.length * actualLineHeight;
-    const startY = (height - blockTotalHeight) / 2 + responsiveFontSize * 0.92;
-    const baseLeftX = width * cfg.leftBaseMarginRatio;
-
-    // Measurement font for max envelope slot sizing
     ctx.font = `${cfg.maxWght} ${responsiveFontSize}px "Roboto Flex Variable", sans-serif`;
     if ('fontVariationSettings' in ctx) {
       (ctx as any).fontVariationSettings = `'wght' ${cfg.maxWght}, 'wdth' ${cfg.maxWdth}`;
     }
 
     const newGrid: CharacterItem[][] = [];
-    const newWords: WordItem[] = [];
 
     lines.forEach((lineText, lineIdx) => {
-      const lineY = startY + lineIdx * actualLineHeight;
-      const indentPx = width * (LINE_INDENT_PERCENTAGES[lineIdx] || 0);
-      let currentX = baseLeftX + indentPx;
+      const lineY = startY + lineIdx * lineHeight;
+      const charSlotWidths: number[] = [];
+      let totalLineWidth = 0;
 
-      const wordsInLine = lineText.split(' ');
-      let charIdxInLine = 0;
+      for (let c = 0; c < lineText.length; c++) {
+        const ch = lineText[c];
+        let slotW: number;
+        if (ch === ' ') {
+          slotW = responsiveFontSize * 0.28;
+        } else {
+          const metrics = ctx.measureText(ch);
+          slotW = metrics.width + cfg.slotPadding;
+        }
+        charSlotWidths.push(slotW);
+        totalLineWidth += slotW;
+      }
 
+      // Center line horizontally with comfortable equal margins
+      const lineStartX = (width - totalLineWidth) / 2;
+      let currentX = lineStartX;
       const lineChars: CharacterItem[] = [];
 
-      wordsInLine.forEach((wordStr, wIdx) => {
-        const cleanWord = wordStr.trim().toUpperCase();
-        const wordKey = cleanWord;
+      // Extract words for Semantic Mass binding
+      const wordsInLine: { word: string; start: number; end: number }[] = [];
+      const regex = /[A-Z]+/g;
+      let match;
+      while ((match = regex.exec(lineText)) !== null) {
+        wordsInLine.push({
+          word: match[0],
+          start: match.index,
+          end: match.index + match[0].length
+        });
+      }
+
+      for (let c = 0; c < lineText.length; c++) {
+        const slotW = charSlotWidths[c];
+        const slotCenterX = currentX + slotW / 2;
+
+        const foundWordMatch = wordsInLine.find((w) => c >= w.start && c < w.end);
+        const wordKey = foundWordMatch ? foundWordMatch.word : '';
         const semanticProps = SEMANTIC_MASS_TABLE[wordKey] || DEFAULT_SEMANTIC_CONFIG;
-        const restingAxes = WORD_RESTING_AXES[wordKey] || { wght: cfg.baseWght, wdth: cfg.baseWdth };
-        const wordId = `w_${lineIdx}_${wIdx}_${cleanWord}`;
 
-        const wordCharIndices: { lineIdx: number; charIdx: number }[] = [];
-        const wordStartX = currentX;
+        const prevChar = charactersRef.current[lineIdx]?.[c];
+        const initialWght = prevChar ? prevChar.currentWght : cfg.baseWght;
+        const initialWdth = prevChar ? prevChar.currentWdth : cfg.baseWdth;
+        const initialResidue = prevChar ? prevChar.residue : 0;
 
-        for (let c = 0; c < cleanWord.length; c++) {
-          const char = cleanWord[c];
-          const metrics = ctx.measureText(char);
-          const slotW = Math.ceil(metrics.width) + 1.2;
-          const slotCenterX = currentX + slotW / 2;
-
-          lineChars.push({
-            char,
-            charIndex: charIdxInLine,
-            lineIndex: lineIdx,
-            x: slotCenterX,
-            y: lineY,
-            slotWidth: slotW,
-            currentWght: restingAxes.wght,
-            targetWght: restingAxes.wght,
-            velocityWght: 0,
-            currentWdth: restingAxes.wdth,
-            targetWdth: restingAxes.wdth,
-            velocityWdth: 0,
-            restingWght: restingAxes.wght,
-            restingWdth: restingAxes.wdth,
-            word: wordKey,
-            wordId,
-            wordResponsiveness: semanticProps.responsiveness,
-            wordInertia: semanticProps.inertia,
-            residue: 0,
-            lastDrawnWght: 0,
-            lastDrawnWdth: 0,
-            dominantContributor: 'none'
-          });
-
-          wordCharIndices.push({ lineIdx, charIdx: charIdxInLine });
-          currentX += slotW;
-          charIdxInLine++;
-        }
-
-        const wordEndX = currentX;
-        const wordW = wordEndX - wordStartX;
-
-        newWords.push({
-          id: wordId,
-          word: cleanWord,
+        lineChars.push({
+          char: lineText[c],
+          charIndex: c,
           lineIndex: lineIdx,
-          charIndices: wordCharIndices,
-          centerX: wordStartX + wordW / 2,
-          centerY: lineY,
-          width: wordW,
-          height: actualLineHeight,
-          dwellBuild: 0,
-          isSettled: false,
-          settledAt: 0,
-          settledTimeLeft: 0,
-          activeVisitorIds: [],
-          responsiveness: semanticProps.responsiveness,
-          inertia: semanticProps.inertia,
-          restingWght: restingAxes.wght,
-          restingWdth: restingAxes.wdth
+          x: slotCenterX,
+          y: lineY,
+          slotWidth: slotW,
+          currentWght: initialWght,
+          targetWght: initialWght,
+          velocityWght: 0,
+          currentWdth: initialWdth,
+          targetWdth: initialWdth,
+          velocityWdth: 0,
+          word: wordKey,
+          wordResponsiveness: semanticProps.responsiveness,
+          wordInertia: semanticProps.inertia,
+          residue: initialResidue,
+          dominantContributor: 'none',
+          lastDrawnWght: 0,
+          lastDrawnWdth: 0
         });
 
-        // Space between words in the same line
-        if (wIdx < wordsInLine.length - 1) {
-          const spaceMetrics = ctx.measureText(' ');
-          const spaceSlotW = Math.ceil(spaceMetrics.width * 1.1);
-
-          lineChars.push({
-            char: ' ',
-            charIndex: charIdxInLine,
-            lineIndex: lineIdx,
-            x: currentX + spaceSlotW / 2,
-            y: lineY,
-            slotWidth: spaceSlotW,
-            currentWght: restingAxes.wght,
-            targetWght: restingAxes.wght,
-            velocityWght: 0,
-            currentWdth: restingAxes.wdth,
-            targetWdth: restingAxes.wdth,
-            velocityWdth: 0,
-            restingWght: restingAxes.wght,
-            restingWdth: restingAxes.wdth,
-            word: '',
-            wordId: '',
-            wordResponsiveness: 1.0,
-            wordInertia: 1.0,
-            residue: 0,
-            lastDrawnWght: 0,
-            lastDrawnWdth: 0,
-            dominantContributor: 'none'
-          });
-
-          currentX += spaceSlotW;
-          charIdxInLine++;
-        }
-      });
+        currentX += slotW;
+      }
 
       newGrid.push(lineChars);
     });
 
     charactersRef.current = newGrid;
-    wordsRef.current = newWords;
-
-    // Compute Second-Tier Background Texture Fragments
-    const textureFontSize = Math.max(13, Math.floor(responsiveFontSize * cfg.textureFontRatio));
-    const newFragments: TextureFragmentItem[] = BACKGROUND_TEXTURE_FRAGMENTS.map((frag, fIdx) => ({
-      id: `frag_${fIdx}_${frag.text}`,
-      text: frag.text,
-      x: frag.relX * width,
-      y: frag.relY * height,
-      fontSize: textureFontSize,
-      currentWght: frag.baseWght,
-      targetWght: frag.baseWght,
-      velocityWght: 0,
-      baseWght: frag.baseWght,
-      baseWdth: frag.baseWdth,
-      opacity: frag.opacity
-    }));
-    textureFragmentsRef.current = newFragments;
   }, []);
 
   useEffect(() => {
     const handleResize = () => {
       const canvas = canvasRef.current;
       if (!canvas) return;
-      computeInstallationLayout(canvas.clientWidth, canvas.clientHeight);
+      const dpr = window.devicePixelRatio || 1;
+      const displayWidth = canvas.clientWidth;
+      const displayHeight = canvas.clientHeight;
+      canvas.width = Math.floor(displayWidth * dpr);
+      canvas.height = Math.floor(displayHeight * dpr);
+      computeFixedSlotLayout(displayWidth, displayHeight);
     };
 
-    handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [computeInstallationLayout, fontReady]);
+  }, [computeFixedSlotLayout]);
 
-  // Main 60 FPS Render Loop (< 8ms target with pre-rendered Glyph Atlas)
+  // Main 60 FPS Render Loop
   useEffect(() => {
+    if (!fontReady) return;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d', { alpha: false });
+    const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     let isRunning = true;
@@ -327,229 +313,199 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
         ) {
           canvas.width = Math.floor(displayWidth * dpr);
           canvas.height = Math.floor(displayHeight * dpr);
-          computeInstallationLayout(displayWidth, displayHeight);
+          computeFixedSlotLayout(displayWidth, displayHeight);
         }
 
         ctx.save();
         ctx.scale(dpr, dpr);
 
         const lines = charactersRef.current;
-        const words = wordsRef.current;
-        const textureFragments = textureFragmentsRef.current;
-
-        if (lines.length === 0 || words.length === 0) {
+        if (lines.length === 0) {
           ctx.restore();
           animationFrameIdRef.current = requestAnimationFrame(render);
           return;
         }
 
         const cfg = INSTALLATION_CONFIG;
-        const fontSize = currentFontSizeRef.current;
         const timeSec = currentTime * 0.001;
+        const fontSize = currentFontSizeRef.current;
 
-        // =========================================================================
-        // 1. UPDATE PHASE (Resting Breathing, Instant Swell, Dwell Build, Settle)
-        // =========================================================================
+        // 1. UPDATE PHASE (Spatial Field, Gestures, Semantic Mass & Attract Mode)
         const updateStart = performance.now();
 
-        const trackedPeople = trackedPeopleRef.current;
-        const hasVisitors = trackedPeople.length > 0;
+        const rawPeople = trackedPeopleRef.current;
+        const rawHands = trackedHandsRef.current;
 
-        // Presence cross-fade
+        const trackedPeople = mechanicsSwitches.headTracking ? rawPeople : [];
+        const trackedHands = mechanicsSwitches.hands ? rawHands : [];
+        const hasVisitors = trackedPeople.length > 0 || trackedHands.length > 0;
+
+        // Attract mode timing
         if (hasVisitors) {
           idleDurationSecRef.current = 0;
-          presenceFadeRef.current = Math.min(1.0, presenceFadeRef.current + dtSec / 0.5); // fast 0.5s response
+          presenceFadeRef.current = Math.min(
+            1.0,
+            presenceFadeRef.current + dtMs / cfg.presenceFadeDurationMs
+          );
         } else {
           idleDurationSecRef.current += dtSec;
-          presenceFadeRef.current = Math.max(0.0, presenceFadeRef.current - dtSec / 1.5);
+          presenceFadeRef.current = Math.max(
+            0.0,
+            presenceFadeRef.current - dtMs / cfg.presenceFadeDurationMs
+          );
         }
 
         const presenceFactor = presenceFadeRef.current;
         const ambientFactor = 1.0 - presenceFactor;
 
-        // Reset per-frame active visitor lists on words
-        words.forEach((w) => {
-          w.activeVisitorIds = [];
-        });
+        // Attract Mode: single wave sweeps across text every 25s after 60s idle
+        let attractWaveActive = false;
+        let attractWaveCenterNorm = -1;
+        if (mechanicsSwitches.attractMode && idleDurationSecRef.current >= cfg.attractModeIdleTriggerSec) {
+          const attractCycle = (idleDurationSecRef.current - cfg.attractModeIdleTriggerSec) % cfg.attractWavePeriodSec;
+          if (attractCycle < cfg.attractWaveDurationSec) {
+            attractWaveActive = true;
+            attractWaveCenterNorm = attractCycle / cfg.attractWaveDurationSec;
+          }
+        }
 
-        // 1A. Visitor Head Tracking & Nearest Word Targeting
-        let primaryWeighedWord: WordItem | null = null;
-        let primaryVisitorStillTime = 0;
-        let primaryVisitorPos = { x: 0, y: 0 };
+        // Two-Hands Stretch Calculation
+        let twoHandStretchActive = false;
+        let stretchMinX = 0;
+        let stretchMaxX = 0;
+        let stretchTargetWdth = cfg.baseWdth;
 
-        if (mechanicsSwitches.headTracking && hasVisitors) {
-          for (const person of trackedPeople) {
-            if (!person.active || !person.nosePos.visible) continue;
+        if (mechanicsSwitches.gestures && trackedHands.length >= 2) {
+          const h1 = trackedHands[0];
+          const h2 = trackedHands[1];
+          if (h1.active && h2.active) {
+            const h1x = h1.palmX * displayWidth;
+            const h2x = h2.palmX * displayWidth;
+            const handDist = Math.abs(h1x - h2x);
 
-            const hx = person.nosePos.x * displayWidth;
-            const hy = person.nosePos.y * displayHeight;
-            primaryVisitorPos = { x: Math.round(hx), y: Math.round(hy) };
-            primaryVisitorStillTime = Math.max(primaryVisitorStillTime, person.stillTime);
-
-            // Find nearest word within capture radius
-            let nearestWord: WordItem | null = null;
-            let minDist = cfg.dwellTargetCaptureRadiusPx;
-
-            for (const w of words) {
-              const dist = Math.hypot(hx - w.centerX, hy - w.centerY);
-              if (dist < minDist) {
-                minDist = dist;
-                nearestWord = w;
-              }
-            }
-
-            if (nearestWord) {
-              const target: WordItem = nearestWord;
-              person.targetWordId = target.id;
-              person.targetWordText = target.word;
-              target.activeVisitorIds.push(person.id);
-
-              if (!primaryWeighedWord || target.dwellBuild > primaryWeighedWord.dwellBuild) {
-                primaryWeighedWord = target;
-              }
-
-              // 1B. Dwell Build Mechanic (Stillness -> Deep weight over DWELL_SECONDS)
-              if (mechanicsSwitches.dwellBuild) {
-                if (person.isStill) {
-                  // Distance from camera scales build speed
-                  const proximityRate = 1.0 + person.depth * 0.85;
-                  const semanticResp = mechanicsSwitches.semanticMass ? target.responsiveness : 1.0;
-                  const deltaBuild = (dtSec / cfg.dwellBuildDurationSec) * proximityRate * semanticResp;
-                  target.dwellBuild = Math.min(1.0, target.dwellBuild + deltaBuild);
-                } else {
-                  // Moving fast stops the build and slowly releases it
-                  target.dwellBuild = Math.max(0, target.dwellBuild - dtSec / cfg.dwellReleaseDurationSec);
-                }
-              }
-            } else {
-              person.targetWordId = null;
-              person.targetWordText = null;
+            if (handDist > 160) {
+              twoHandStretchActive = true;
+              stretchMinX = Math.min(h1x, h2x);
+              stretchMaxX = Math.max(h1x, h2x);
+              const ratio = Math.max(0, Math.min(1, (handDist - 160) / (cfg.twoHandStretchMaxDist - 160)));
+              stretchTargetWdth = cfg.baseWdth + (cfg.maxWdth - cfg.baseWdth) * ratio;
             }
           }
         }
 
-        // Release words that have no active visitors dwelling on them
-        words.forEach((w) => {
-          if (w.activeVisitorIds.length === 0 && !w.isSettled) {
-            w.dwellBuild = Math.max(0, w.dwellBuild - dtSec / cfg.dwellReleaseDurationSec);
-          }
+        // Active influence points
+        const influencePoints: {
+          x: number;
+          y: number;
+          depth: number;
+          radius: number;
+          label: string;
+          isFist: boolean;
+          wakeVx: number;
+          wakeVy: number;
+          wakeSpeed: number;
+        }[] = [];
 
-          // 1C. Settle Mechanic: When word reaches full weight (build >= 1.0)
-          if (mechanicsSwitches.settle && w.dwellBuild >= 0.99 && !w.isSettled) {
-            w.isSettled = true;
-            w.settledAt = currentTime;
-            w.dwellBuild = 1.0;
+        // Add Hands
+        trackedHands.forEach((hand) => {
+          if (!hand.active) return;
+          const hx = hand.palmX * displayWidth;
+          const hy = hand.palmY * displayHeight;
 
-            // Trigger soft low settle tone, stereo panned to word position
-            if (mechanicsSwitches.sound) {
-              const pan = (w.centerX / displayWidth) * 2 - 1;
-              const settleFreq = 52 + w.lineIndex * 4.5;
-              audioEngine.playSettleTone(pan, settleFreq);
-            }
+          if (hand.isFist && mechanicsSwitches.gestures) {
+            // Closed fist = "Weight" gesture: Small radius, peak wght 900
+            influencePoints.push({
+              x: hx,
+              y: hy,
+              depth: 1.0,
+              radius: cfg.fistRadius,
+              label: 'Fist (Max Weight)',
+              isFist: true,
+              wakeVx: hand.velocityX,
+              wakeVy: hand.velocityY,
+              wakeSpeed: hand.speed
+            });
+          } else {
+            // Open palm = Wide, moderate influence
+            influencePoints.push({
+              x: hx,
+              y: hy,
+              depth: hand.depth * cfg.openPalmDepthMult,
+              radius: cfg.openPalmRadius * (0.8 + 0.4 * hand.depth),
+              label: 'Open Palm',
+              isFist: false,
+              wakeVx: hand.velocityX,
+              wakeVy: hand.velocityY,
+              wakeSpeed: hand.speed
+            });
           }
         });
 
-        // 1D. Empty Room Life (Attract Mode): After 60s, one word swells and releases over ~20s
-        let emptyLifeWordId: string | null = null;
-        let emptyLifeWeightDelta = 0;
-        let emptyLifeStatus = 'Waiting (Visitors active)';
-
-        if (mechanicsSwitches.idleLife && idleDurationSecRef.current >= cfg.emptyRoomTriggerSec) {
-          const idleElapsed = idleDurationSecRef.current - cfg.emptyRoomTriggerSec;
-          const cycleIdx = Math.floor(idleElapsed / cfg.emptyRoomWaveDurationSec) % words.length;
-          const cycleProgress = (idleElapsed % cfg.emptyRoomWaveDurationSec) / cfg.emptyRoomWaveDurationSec;
-          const currentIdleWord = words[cycleIdx];
-
-          if (currentIdleWord) {
-            emptyLifeWordId = currentIdleWord.id;
-            const bell = Math.sin(cycleProgress * Math.PI);
-            emptyLifeWeightDelta = (cfg.emptyRoomPeakWght - currentIdleWord.restingWght) * bell * ambientFactor;
-            emptyLifeStatus = `Active: "${currentIdleWord.word}" (${Math.round((1 - cycleProgress) * 20)}s left)`;
-          }
-        } else if (mechanicsSwitches.idleLife) {
-          const rem = Math.max(0, Math.round(cfg.emptyRoomTriggerSec - idleDurationSecRef.current));
-          emptyLifeStatus = hasVisitors ? 'Paused (Visitor present)' : `Trigger in ${rem}s`;
-        } else {
-          emptyLifeStatus = 'Mechanic Disabled';
+        // Add Head (Subtle anchor so hands dominate)
+        if (mechanicsSwitches.headTracking) {
+          trackedPeople.forEach((person) => {
+            if (!person.active || !person.nosePos.visible) return;
+            influencePoints.push({
+              x: person.nosePos.x * displayWidth,
+              y: person.nosePos.y * displayHeight,
+              depth: person.depth * 0.35,
+              radius: 380,
+              label: 'Head',
+              isFist: false,
+              wakeVx: 0,
+              wakeVy: 0,
+              wakeSpeed: 0
+            });
+          });
         }
 
-        // 1E. Residue Exponential Decay (Half-life ~3 minutes = 180s)
-        const residueDecayFactor = mechanicsSwitches.residue
-          ? Math.exp((-Math.LN2 / cfg.residueHalfLifeSeconds) * dtSec)
-          : 0;
+        // Residue exponential decay lambda: half-life ~45s
+        const residueDecayFactor = Math.exp((-Math.LN2 / cfg.residueHalfLifeSeconds) * dtSec);
 
-        let totalCanvasWght = 0;
-        let totalCanvasWdth = 0;
-        let totalGlyphCount = 0;
+        let totalWghtSum = 0;
+        let totalWdthSum = 0;
+        let totalCharCount = 0;
         let totalResidueSum = 0;
+        let maxWeightDropVelocity = 0;
 
-        const activeWeighedWord: WordItem | null = primaryWeighedWord;
+        const baseWeight = manualAxes ? manualAxes.wght : cfg.baseWght;
+        const baseWidth = manualAxes ? manualAxes.wdth : cfg.baseWdth;
 
-        // Update second-tier background fragments (ripple softly at 0.3x)
-        textureFragments.forEach((frag) => {
-          let fragRipple = 0;
-          if (hasVisitors && primaryVisitorPos.x > 0) {
-            const dist = Math.hypot(frag.x - primaryVisitorPos.x, frag.y - primaryVisitorPos.y);
-            if (dist < 500) {
-              fragRipple += (1 - dist / 500) * 85 * presenceFactor;
-            }
-          }
-          if (activeWeighedWord && activeWeighedWord.isSettled) {
-            const distToSettled = Math.hypot(frag.x - activeWeighedWord.centerX, frag.y - activeWeighedWord.centerY);
-            if (distToSettled < 600) {
-              fragRipple += (1 - distToSettled / 600) * 120;
-            }
-          }
-
-          const fragBreath = Math.sin(timeSec * 0.38 + frag.x * 0.008) * 10;
-          frag.targetWght = frag.baseWght + (fragRipple * cfg.textureRippleFactor) + fragBreath;
-
-          frag.velocityWght += (frag.targetWght - frag.currentWght) * 0.16;
-          frag.velocityWght *= 0.78;
-          frag.currentWght += frag.velocityWght;
-        });
-
-        // Apply weights and physics to each primary glyph
         lines.forEach((lineChars, lineIdx) => {
           lineChars.forEach((ch) => {
-            if (ch.char === ' ') return;
-            totalGlyphCount++;
+            totalCharCount++;
 
-            const word = words.find((w) => w.id === ch.wordId);
-            const wordDwell = (word && mechanicsSwitches.dwellBuild) ? word.dwellBuild : 0;
-            const wordSettled = (word && mechanicsSwitches.settle) ? word.isSettled : false;
+            // 1. Residue Update: Accumulate under influence, decay slowly
+            let maxInfluence = 0;
+            let rippleWakeOffset = 0;
 
-            // 1. Subtle desynchronized harmonic per-letter breathing (±28 wght)
-            const letterPhase = lineIdx * 2.3 + ch.charIndex * 0.45;
-            const breathingDelta = Math.sin(timeSec * cfg.breathingSpeed + letterPhase) * cfg.breathingWghtDelta;
+            if (influencePoints.length > 0) {
+              influencePoints.forEach((pt) => {
+                const dx = ch.x - pt.x;
+                const dy = ch.y - pt.y;
+                const dist = Math.hypot(dx, dy);
 
-            // 2. Instant soft swell around head target within ~0.5s
-            let instantSwell = 0;
-            if (hasVisitors && primaryVisitorPos.x > 0) {
-              const distToHead = Math.hypot(ch.x - primaryVisitorPos.x, ch.y - primaryVisitorPos.y);
-              if (distToHead < cfg.instantSwellRadiusPx) {
-                const swellNorm = distToHead / cfg.instantSwellRadiusPx;
-                const swellFalloff = Math.pow(Math.cos(swellNorm * (Math.PI / 2)), 2);
-                instantSwell = cfg.instantSwellWght * swellFalloff * presenceFactor;
-              }
+                if (dist < pt.radius) {
+                  const normDist = dist / pt.radius;
+                  const falloff = Math.cos(normDist * (Math.PI / 2));
+                  const inf = Math.pow(Math.max(0, falloff), cfg.falloffExponent) * pt.depth;
+                  if (inf > maxInfluence) maxInfluence = inf;
+
+                  // Hand speed ripple
+                  if (mechanicsSwitches.speedRipple && pt.wakeSpeed > 0.35) {
+                    const dot = (dx * pt.wakeVx + dy * pt.wakeVy) / (dist * pt.wakeSpeed);
+                    if (dot < -0.3) {
+                      rippleWakeOffset = Math.min(0.25, rippleWakeOffset + 0.18 * (1 - normDist));
+                    }
+                  }
+                }
+              });
             }
 
-            // 3. Dwell influence spread to adjacent letters
-            let letterDwellInfluence = wordDwell;
-            if (wordDwell === 0 && activeWeighedWord) {
-              const distToActive = Math.hypot(ch.x - activeWeighedWord.centerX, ch.y - activeWeighedWord.centerY);
-              if (distToActive < cfg.dwellSpreadRadiusPx) {
-                const spreadRatio = 1 - distToActive / cfg.dwellSpreadRadiusPx;
-                letterDwellInfluence = activeWeighedWord.dwellBuild * spreadRatio * 0.35;
-              }
-            }
-
-            // 4. Residue accumulation & decay
+            // Accumulate residue
             if (mechanicsSwitches.residue) {
-              if (wordSettled) {
-                ch.residue = 1.0;
-              } else if (letterDwellInfluence > 0.08) {
-                ch.residue = Math.min(1.0, ch.residue + letterDwellInfluence * cfg.residueAccumulationRate * dtSec);
+              if (maxInfluence > 0.05) {
+                ch.residue = Math.min(1.0, ch.residue + maxInfluence * cfg.residueAccumulationRate * dtSec);
               }
               ch.residue *= residueDecayFactor;
             } else {
@@ -557,140 +513,130 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
             }
             totalResidueSum += ch.residue;
 
-            // 5. Empty room wave contribution
-            let letterIdleDelta = 0;
-            if (word && word.id === emptyLifeWordId) {
-              letterIdleDelta = emptyLifeWeightDelta;
-            }
+            // Resting weight floor for this glyph including residue imprint (capped at 500)
+            const residueContribution = (cfg.maxResidueWght - baseWeight) * ch.residue;
+            const glyphRestingWght = baseWeight + residueContribution;
 
-            // Determine dominant contributor for Source Tinting
-            const dwellDelta = (cfg.maxWght - ch.restingWght) * letterDwellInfluence * presenceFactor;
-            const residueDelta = (cfg.maxResidueWght - ch.restingWght) * ch.residue;
+            let targetW = glyphRestingWght;
+            let targetWd = baseWidth;
 
-            if (dwellDelta > 50 || wordSettled) {
-              ch.dominantContributor = 'dwell';
-            } else if (residueDelta > 30) {
-              ch.dominantContributor = 'residue';
-            } else if (letterIdleDelta > 35) {
-              ch.dominantContributor = 'idle';
-            } else {
-              ch.dominantContributor = 'none';
-            }
+            // Dominant contributor tracking for Source Tinting
+            let contributor: DominantContributor = 'none';
 
-            // Target Weight & Width Calculation
-            let targetW = ch.restingWght + breathingDelta;
-            let targetWd = ch.restingWdth;
+            // 2. Apply Visitor Influence with Semantic Mass Responsiveness
+            if (maxInfluence > 0) {
+              const effectiveInf = Math.max(0, maxInfluence - rippleWakeOffset);
+              const semanticResp = mechanicsSwitches.semanticMass ? ch.wordResponsiveness : 1.0;
+              const semanticTargetDelta = (cfg.maxWght - glyphRestingWght) * effectiveInf * semanticResp;
+              const visitorTargetW = glyphRestingWght + semanticTargetDelta;
+              const visitorTargetWd = baseWidth + (cfg.maxWdth - baseWidth) * effectiveInf;
 
-            if (wordSettled) {
-              // Full dramatic settle state: wght 900, wdth 125%
-              targetW = cfg.maxWght;
-              targetWd = cfg.maxWdth;
-            } else {
-              if (instantSwell > 0) {
-                targetW += instantSwell;
-                targetWd += (cfg.maxWdth - ch.restingWdth) * (instantSwell / cfg.instantSwellWght) * 0.35;
-              }
-              if (letterDwellInfluence > 0) {
-                targetW += dwellDelta;
-                targetWd += (cfg.maxWdth - ch.restingWdth) * letterDwellInfluence * presenceFactor;
-              }
-              if (residueDelta > 0) {
-                targetW = Math.max(targetW, ch.restingWght + residueDelta);
-              }
-              if (letterIdleDelta > 0) {
-                targetW += letterIdleDelta;
+              targetW = targetW * (1 - presenceFactor) + visitorTargetW * presenceFactor;
+              targetWd = targetWd * (1 - presenceFactor) + visitorTargetWd * presenceFactor;
+
+              if (effectiveInf * presenceFactor > 0.15) {
+                contributor = 'interaction';
               }
             }
 
-            targetW = Math.max(100, Math.min(cfg.maxWght, targetW));
-            targetWd = Math.max(65, Math.min(cfg.maxWdth, targetWd));
+            // 3. Two-Hands Stretch between hands
+            if (twoHandStretchActive && ch.x >= stretchMinX && ch.x <= stretchMaxX) {
+              targetWd = Math.max(targetWd, stretchTargetWdth);
+              contributor = 'interaction';
+            }
 
-            // Physical Spring-Damper Inertia
-            const weightRatio = Math.max(0, Math.min(1, (targetW - 100) / 800));
-            const semanticInertia = mechanicsSwitches.semanticMass ? ch.wordInertia : 1.0;
-            const mass = (cfg.baseMass + (cfg.maxMass - cfg.baseMass) * weightRatio) * semanticInertia;
+            // 4. Idle Ambient Breathing / Attract Mode Wave
+            if (ambientFactor > 0.001) {
+              if (attractWaveActive && attractWaveCenterNorm >= 0) {
+                const normX = ch.x / displayWidth;
+                const distToWave = Math.abs(normX - attractWaveCenterNorm);
+                if (distToWave < 0.22) {
+                  const waveFactor = Math.pow(Math.cos((distToWave / 0.22) * (Math.PI / 2)), 2);
+                  targetW += (cfg.attractWavePeakWght - baseWeight) * waveFactor * ambientFactor;
+                  contributor = 'idle';
+                }
+              } else {
+                // Subtle harmonic breath
+                const wave = Math.sin(
+                  timeSec * cfg.ambientWaveSpeed + lineIdx * 0.42 + ch.charIndex * 0.08
+                );
+                const breathMod = (wave + 1) * 0.5;
+                targetW += breathMod * cfg.ambientWaveAmplitude * ambientFactor;
+                targetWd += breathMod * 6 * ambientFactor;
+              }
+            }
 
-            const forceW = cfg.springStiffness * (targetW - ch.currentWght) - cfg.dampingRatio * ch.velocityWght;
-            ch.velocityWght += (forceW / mass) * dtFactor;
+            if (contributor === 'none' && ch.residue > 0.12) {
+              contributor = 'residue';
+            }
+            ch.dominantContributor = contributor;
+
+            // 5. Physical Mass & Inertia with Semantic Inertia Scaling
+            const normalizedCurrentWeight = Math.max(
+              0,
+              Math.min(1, (ch.currentWght - baseWeight) / (cfg.maxWght - baseWeight))
+            );
+            const basePhysicalMass = cfg.baseMass + (cfg.maxMass - cfg.baseMass) * normalizedCurrentWeight;
+            const wordInertia = mechanicsSwitches.semanticMass ? ch.wordInertia : 1.0;
+            const mass = basePhysicalMass * wordInertia;
+
+            const forceWght = cfg.springStiffness * (targetW - ch.currentWght) - cfg.dampingRatio * ch.velocityWght;
+            const accelWght = forceWght / mass;
+            ch.velocityWght += accelWght * dtFactor;
             ch.currentWght += ch.velocityWght * dtFactor;
 
-            const forceWd = cfg.springStiffness * (targetWd - ch.currentWdth) - cfg.dampingRatio * ch.velocityWdth;
-            ch.velocityWdth += (forceWd / mass) * dtFactor;
+            if (ch.velocityWght < -cfg.settleThumpThreshold) {
+              if (Math.abs(ch.velocityWght) > maxWeightDropVelocity) {
+                maxWeightDropVelocity = Math.abs(ch.velocityWght);
+              }
+            }
+
+            const forceWdth = cfg.springStiffness * (targetWd - ch.currentWdth) - cfg.dampingRatio * ch.velocityWdth;
+            const accelWdth = forceWdth / mass;
+            ch.velocityWdth += accelWdth * dtFactor;
             ch.currentWdth += ch.velocityWdth * dtFactor;
 
-            ch.currentWght = Math.max(100, Math.min(cfg.maxWght, ch.currentWght));
-            ch.currentWdth = Math.max(65, Math.min(cfg.maxWdth, ch.currentWdth));
+            ch.currentWght = Math.max(cfg.baseWght, Math.min(cfg.maxWght, ch.currentWght));
+            ch.currentWdth = Math.max(cfg.baseWdth, Math.min(cfg.maxWdth, ch.currentWdth));
 
-            totalCanvasWght += ch.currentWght;
-            totalCanvasWdth += ch.currentWdth;
+            totalWghtSum += ch.currentWght;
+            totalWdthSum += ch.currentWdth;
           });
         });
 
-        const avgWght = totalGlyphCount > 0 ? Math.round(totalCanvasWght / totalGlyphCount) : cfg.baseWght;
-        const avgWdth = totalGlyphCount > 0 ? Math.round(totalCanvasWdth / totalGlyphCount) : cfg.baseWdth;
-        const meanResidue = totalGlyphCount > 0 ? Number((totalResidueSum / totalGlyphCount).toFixed(3)) : 0;
-
-        // 1F. Web Audio Drone Update
-        const activePan = activeWeighedWord
-          ? (activeWeighedWord.centerX / displayWidth) * 2 - 1
-          : 0;
-
-        audioEngine.updateWeight(avgWght, presenceFactor, activePan, mechanicsSwitches.sound);
-        onMetricsUpdate?.(avgWght, avgWdth);
-
         const updateDuration = performance.now() - updateStart;
 
-        // =========================================================================
-        // 2. RENDER PHASE: DRAWIMAGE GLYPH ATLAS (< 8ms TARGET)
-        // =========================================================================
+        // 2. RENDER PHASE: 100% DRAWIMAGE FROM GLYPH ATLAS CACHE (< 8ms TARGET)
         const renderStart = performance.now();
 
-        // Pure black museum background
         ctx.fillStyle = cfg.backgroundColor;
         ctx.fillRect(0, 0, displayWidth, displayHeight);
-
-        // Render Second-Tier Background Texture Fragments (Quiet background ripples)
-        textureFragments.forEach((frag) => {
-          ctx.font = `${Math.round(frag.currentWght)} ${frag.fontSize}px "Roboto Flex Variable", sans-serif`;
-          if ('fontVariationSettings' in ctx) {
-            (ctx as any).fontVariationSettings = `'wght' ${Math.round(frag.currentWght)}, 'wdth' ${frag.baseWdth}`;
-          }
-          ctx.fillStyle = `rgba(237, 234, 226, ${frag.opacity})`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(frag.text, frag.x, frag.y);
-        });
 
         const slotHalfW = Math.ceil(fontSize * 1.5) / 2;
         const slotHalfH = Math.ceil(fontSize * 1.6) / 2;
         const drawW = slotHalfW * 2;
         const drawH = slotHalfH * 2;
 
+        const effectiveShowResidueHeatmap = showResidueHeatmap || (isMechanicsPanelOpen && wallVisualizations.residueHeatmap);
         const useSourceTint = isMechanicsPanelOpen && wallVisualizations.sourceTint;
 
-        // Draw Main Installation Glyphs from Atlas
         lines.forEach((lineChars) => {
           lineChars.forEach((ch) => {
             if (ch.char === ' ') return;
 
-            // Optional Residue Heatmap visualization (only when panel open)
-            if (isMechanicsPanelOpen && wallVisualizations.residueHeatmap && ch.residue > 0.05) {
-              ctx.fillStyle = `rgba(192, 132, 252, ${ch.residue * 0.35})`;
-              ctx.fillRect(ch.x - ch.slotWidth / 2, ch.y - fontSize * 0.65, ch.slotWidth, fontSize * 1.1);
+            // Optional Residue Heatmap visualization
+            if (effectiveShowResidueHeatmap && ch.residue > 0.05) {
+              ctx.fillStyle = `rgba(168, 85, 247, ${ch.residue * 0.28})`;
+              ctx.fillRect(ch.x - ch.slotWidth / 2, ch.y - fontSize * 0.7, ch.slotWidth, fontSize * 1.1);
             }
 
             // Determine glyph color
             let glyphColor = cfg.textColor;
             if (useSourceTint) {
-              if (ch.dominantContributor === 'dwell') glyphColor = cfg.dwellTintColor;
+              if (ch.dominantContributor === 'interaction') glyphColor = cfg.interactionTintColor;
               else if (ch.dominantContributor === 'residue') glyphColor = cfg.residueTintColor;
               else if (ch.dominantContributor === 'idle') glyphColor = cfg.idleTintColor;
             }
-
-            // Settle dramatic scale-up inside slot:
-            const word = words.find((w) => w.id === ch.wordId);
-            const isSettledWord = word && word.isSettled;
-            const scale = isSettledWord ? cfg.settledScaleFactor : 1.0;
 
             // Quantized bounds for cross-fading
             const lowWght = Math.floor(ch.currentWght / 50) * 50;
@@ -698,189 +644,187 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
             const tWght = (ch.currentWght - lowWght) / 50;
 
             const lowWdth = Math.floor(ch.currentWdth / 10) * 10;
-            const highWdth = Math.min(125, lowWdth + 10);
+            const highWdth = Math.min(120, lowWdth + 10);
 
-            const scaledW = drawW * scale;
-            const scaledH = drawH * scale;
-            const drawX = ch.x - scaledW / 2;
-            const drawY = ch.y - scaledH / 2;
+            const drawX = ch.x - slotHalfW;
+            const drawY = ch.y - slotHalfH;
 
             const imgLow = glyphAtlas.getGlyph(ch.char, lowWght, lowWdth, glyphColor);
 
             if (tWght < 0.05 || lowWght === highWght) {
               ctx.globalAlpha = 1.0;
-              ctx.drawImage(imgLow, drawX, drawY, scaledW, scaledH);
+              ctx.drawImage(imgLow, drawX, drawY, drawW, drawH);
             } else {
               const imgHigh = glyphAtlas.getGlyph(ch.char, highWght, highWdth, glyphColor);
               ctx.globalAlpha = 1.0 - tWght;
-              ctx.drawImage(imgLow, drawX, drawY, scaledW, scaledH);
+              ctx.drawImage(imgLow, drawX, drawY, drawW, drawH);
               ctx.globalAlpha = tWght;
-              ctx.drawImage(imgHigh, drawX, drawY, scaledW, scaledH);
+              ctx.drawImage(imgHigh, drawX, drawY, drawW, drawH);
             }
           });
         });
 
         ctx.globalAlpha = 1.0;
 
-        // =========================================================================
-        // 3. WALL VISUALIZATIONS (ONLY WHILE MECHANICS PANEL IS OPEN)
-        // =========================================================================
-        if (isMechanicsPanelOpen) {
-          // 3A. Word Labels (Semantic Multiplier Tags)
-          if (wallVisualizations.wordLabels) {
+        // Source Tint Legend on Canvas when active
+        if (useSourceTint) {
+          const legendX = 24;
+          const legendY = displayHeight - 48;
+          ctx.font = '10px monospace';
+          ctx.textBaseline = 'middle';
+          ctx.textAlign = 'left';
+
+          ctx.fillStyle = cfg.interactionTintColor;
+          ctx.fillText('■ Interaction', legendX, legendY);
+
+          ctx.fillStyle = cfg.residueTintColor;
+          ctx.fillText('■ Residue Memory', legendX + 110, legendY);
+
+          ctx.fillStyle = cfg.idleTintColor;
+          ctx.fillText('■ Attract Wave', legendX + 240, legendY);
+
+          ctx.fillStyle = cfg.textColor;
+          ctx.fillText('■ Resting Baseline', legendX + 360, legendY);
+        }
+
+        // Debug influence rings & Two-Hands Stretch bounds
+        const effectiveShowInfluence = (isDebugActive && showInfluencePoints) || (isMechanicsPanelOpen && wallVisualizations.influenceDots);
+
+        if (effectiveShowInfluence) {
+          if (twoHandStretchActive) {
+            // Draw horizontal stretch bar between hands
+            ctx.strokeStyle = 'rgba(56, 189, 248, 0.4)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([4, 4]);
+            ctx.strokeRect(stretchMinX, displayHeight * 0.2, stretchMaxX - stretchMinX, displayHeight * 0.6);
+            ctx.setLineDash([]);
+
             ctx.font = '10px monospace';
+            ctx.fillStyle = '#38bdf8';
             ctx.textAlign = 'center';
-            words.forEach((w) => {
-              ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
-              ctx.fillText(
-                `${w.word} [${w.restingWght}w] (${w.responsiveness}x resp / ${w.inertia}x in)`,
-                w.centerX,
-                w.centerY - fontSize * 0.75
-              );
-            });
+            ctx.fillText(
+              `TWO-HAND STRETCH: ${(stretchTargetWdth).toFixed(0)}% WIDTH`,
+              (stretchMinX + stretchMaxX) / 2,
+              displayHeight * 0.18
+            );
           }
 
-          // 3B. Dwell Progress Rings (Thin ring on target word per visitor)
-          if (wallVisualizations.dwellRings) {
-            words.forEach((w) => {
-              if (w.dwellBuild > 0.02 || w.isSettled) {
-                const ringRadius = 24;
-                const ringX = w.centerX;
-                const ringY = w.centerY - fontSize * 0.98;
+          if (influencePoints.length > 0) {
+            influencePoints.forEach((pt) => {
+              ctx.beginPath();
+              ctx.arc(pt.x, pt.y, pt.radius, 0, Math.PI * 2);
+              ctx.strokeStyle = pt.isFist ? 'rgba(244, 63, 94, 0.35)' : 'rgba(74, 222, 128, 0.18)';
+              ctx.lineWidth = pt.isFist ? 2 : 1;
+              ctx.stroke();
 
-                // Track ring
-                ctx.beginPath();
-                ctx.arc(ringX, ringY, ringRadius, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
-                ctx.lineWidth = 2.5;
-                ctx.stroke();
+              ctx.beginPath();
+              ctx.arc(pt.x, pt.y, pt.isFist ? 8 : 6, 0, Math.PI * 2);
+              ctx.fillStyle = pt.isFist ? '#f43f5e' : '#4ade80';
+              ctx.fill();
 
-                // Progress arc
-                ctx.beginPath();
-                const startAngle = -Math.PI / 2;
-                const endAngle = startAngle + Math.PI * 2 * w.dwellBuild;
-                ctx.arc(ringX, ringY, ringRadius, startAngle, endAngle);
-                ctx.strokeStyle = w.isSettled ? '#4ade80' : cfg.dwellTintColor;
-                ctx.lineWidth = 2.5;
-                ctx.stroke();
-
-                // Percentage text
-                ctx.font = '9px monospace';
-                ctx.fillStyle = w.isSettled ? '#4ade80' : cfg.dwellTintColor;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(w.isSettled ? 'SETTLED' : `${Math.round(w.dwellBuild * 100)}%`, ringX, ringY);
-              }
+              ctx.font = '10px monospace';
+              ctx.fillStyle = pt.isFist ? '#f43f5e' : '#4ade80';
+              ctx.textAlign = 'left';
+              ctx.fillText(`${pt.label} (${Math.round(pt.depth * 100)}%)`, pt.x + 12, pt.y - 6);
             });
-          }
-
-          // 3C. Source Tint Legend
-          if (wallVisualizations.sourceTint) {
-            const legendX = 24;
-            const legendY = displayHeight - 48;
-            ctx.font = '10.5px monospace';
-            ctx.textBaseline = 'middle';
-            ctx.textAlign = 'left';
-
-            // Dwell
-            ctx.fillStyle = cfg.dwellTintColor;
-            ctx.beginPath();
-            ctx.arc(legendX, legendY, 5, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#fff';
-            ctx.fillText('Dwell Build', legendX + 12, legendY);
-
-            // Residue
-            ctx.fillStyle = cfg.residueTintColor;
-            ctx.beginPath();
-            ctx.arc(legendX + 130, legendY, 5, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#fff';
-            ctx.fillText('Residue Memory', legendX + 142, legendY);
-
-            // Idle
-            ctx.fillStyle = cfg.idleTintColor;
-            ctx.beginPath();
-            ctx.arc(legendX + 280, legendY, 5, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#fff';
-            ctx.fillText('Empty Life', legendX + 292, legendY);
-
-            // Default
-            ctx.fillStyle = cfg.textColor;
-            ctx.beginPath();
-            ctx.arc(legendX + 400, legendY, 5, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#aaa';
-            ctx.fillText('Base Hierarchy', legendX + 412, legendY);
           }
         }
 
         const renderDuration = performance.now() - renderStart;
+
+        // Audio updates
+        const meanWght = totalCharCount > 0 ? totalWghtSum / totalCharCount : cfg.baseWght;
+        if (mechanicsSwitches.sound) {
+          audioEngine.updateWeight(meanWght, presenceFactor);
+
+          if (maxWeightDropVelocity > cfg.settleThumpThreshold) {
+            const intensity = Math.min(1.0, (maxWeightDropVelocity - cfg.settleThumpThreshold) / 40);
+            audioEngine.triggerSettlingThump(intensity);
+          }
+        }
+
+        if (totalCharCount > 0) {
+          onMetricsUpdate?.(
+            Math.round(meanWght),
+            Math.round(totalWdthSum / totalCharCount)
+          );
+        }
+
         onTimingUpdate?.(
           Number(updateDuration.toFixed(1)),
           Number(renderDuration.toFixed(1))
         );
 
-        // Update live telemetry for the Mechanics Panel
-        const settledWords = words.filter((w) => w.isSettled).map((w) => w.word);
-        const audioTelemetry = audioEngine.getLiveTelemetry();
+        // Update telemetry for Mechanics Panel
+        if (isMechanicsPanelOpen) {
+          const primaryHand = trackedHands[0];
+          const primaryPerson = trackedPeople[0];
+          const gestureText = twoHandStretchActive
+            ? 'TWO-HAND STRETCH'
+            : (primaryHand?.isFist ? 'FIST (MAX WEIGHT)' : (primaryHand?.isOpen ? 'OPEN PALM' : 'None'));
 
-        onTelemetryUpdate?.({
-          dwellStatus: activeWeighedWord
-            ? `${primaryVisitorStillTime.toFixed(1)}s still on "${activeWeighedWord.word}" (${Math.round(activeWeighedWord.dwellBuild * 100)}%)`
-            : 'No visitor dwelling',
-          settledWordsCount: settledWords.length,
-          settledList: settledWords.length > 0 ? settledWords.join(', ') : 'None',
-          meanResidue,
-          semanticMultiplierText: activeWeighedWord
-            ? `"${activeWeighedWord.word}": ${activeWeighedWord.responsiveness}x resp, ${activeWeighedWord.inertia}x in`
-            : 'None under focus',
-          headScreenPosText: hasVisitors
-            ? `(${primaryVisitorPos.x}px, ${primaryVisitorPos.y}px)`
-            : 'No visitors',
-          trackedVisitorsCount: trackedPeople.length,
-          idleLifeStatus: emptyLifeStatus,
-          droneLevel: audioTelemetry.droneLevel,
-          lastToneText: audioTelemetry.lastToneText,
-          currentPan: audioTelemetry.currentPan
-        });
+          const headNose = primaryPerson?.nosePos;
+          const headPosText = headNose?.visible
+            ? `${Math.round(headNose.x * displayWidth)}px, ${Math.round(headNose.y * displayHeight)}px`
+            : 'None';
+
+          onTelemetryUpdate?.({
+            gestureStateText: gestureText,
+            handSpeedText: primaryHand ? `${primaryHand.speed.toFixed(2)}` : '0.00',
+            headPosText,
+            trackedHandsCount: trackedHands.length,
+            meanResidue: totalCharCount > 0 ? totalResidueSum / totalCharCount : 0,
+            idleStatus: attractWaveActive ? 'Attract Wave Sweeping' : (hasVisitors ? 'Active' : `Idle (${Math.round(idleDurationSecRef.current)}s)`),
+            meanWeight: Math.round(meanWght),
+            droneActive: presenceFactor > 0
+          });
+        }
 
         ctx.restore();
-        animationFrameIdRef.current = requestAnimationFrame(render);
-      } catch (err) {
-        console.error('Render loop failsafe:', err);
-        animationFrameIdRef.current = requestAnimationFrame(render);
+      } catch (renderError) {
+        console.warn('Render loop failsafe recovery:', renderError);
       }
+
+      animationFrameIdRef.current = requestAnimationFrame(render);
     };
 
     animationFrameIdRef.current = requestAnimationFrame(render);
+
     return () => {
       isRunning = false;
-      if (animationFrameIdRef.current) cancelAnimationFrame(animationFrameIdRef.current);
+      if (animationFrameIdRef.current) {
+        cancelAnimationFrame(animationFrameIdRef.current);
+      }
     };
   }, [
-    computeInstallationLayout,
+    fontReady,
+    manualAxes,
+    trackedPeopleRef,
+    trackedHandsRef,
+    isDebugActive,
+    showInfluencePoints,
+    showResidueHeatmap,
     isMechanicsPanelOpen,
     mechanicsSwitches,
     wallVisualizations,
+    computeFixedSlotLayout,
     onFpsUpdate,
     onMetricsUpdate,
     onTimingUpdate,
-    onTelemetryUpdate,
-    trackedPeopleRef
+    onTelemetryUpdate
   ]);
 
   return (
     <div
+      ref={containerRef}
       style={{
         position: 'absolute',
         top: 0,
         left: 0,
         width: '100vw',
         height: '100vh',
-        backgroundColor: '#000000',
-        overflow: 'hidden'
+        overflow: 'hidden',
+        background: '#000000'
       }}
     >
       <canvas

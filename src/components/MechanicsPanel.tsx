@@ -1,6 +1,6 @@
 import React from 'react';
 import type { MechanicsSwitches, WallVisualizations, MechanicsLiveTelemetry } from '../types';
-import { INSTALLATION_CONFIG, INSTALLATION_TEXT_LINES, DWELL_SECONDS } from '../config';
+import { INSTALLATION_CONFIG } from '../config';
 
 interface MechanicsPanelProps {
   isOpen: boolean;
@@ -12,10 +12,9 @@ interface MechanicsPanelProps {
   telemetry: MechanicsLiveTelemetry;
   fps: number;
   renderMs: number;
-  onSimulateVisitor: (word: string) => void;
-  isSimulating: boolean;
-  simulationSecondsLeft: number;
-  simulatedTargetWord: string;
+  testMode: 'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle';
+  testCountdown: number;
+  onSetTestMode: (mode: 'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle') => void;
   onClearResidue: () => void;
 }
 
@@ -29,24 +28,12 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
   telemetry,
   fps,
   renderMs,
-  onSimulateVisitor,
-  isSimulating,
-  simulationSecondsLeft,
-  simulatedTargetWord,
+  testMode,
+  testCountdown,
+  onSetTestMode,
   onClearResidue
 }) => {
-  const [selectedWord, setSelectedWord] = React.useState<string>('HEAVY');
-
   if (!isOpen) return null;
-
-  // Extract list of all unique individual words from installation lines
-  const availableWords: string[] = [];
-  INSTALLATION_TEXT_LINES.forEach((line) => {
-    line.split(' ').forEach((w) => {
-      const clean = w.trim().toUpperCase();
-      if (clean && !availableWords.includes(clean)) availableWords.push(clean);
-    });
-  });
 
   return (
     <div
@@ -117,7 +104,7 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
       </div>
 
       {/* Simulated Mode High-Visibility Alert Banner */}
-      {isSimulating && (
+      {testMode !== 'live' && (
         <div
           style={{
             background: 'rgba(245, 158, 11, 0.22)',
@@ -135,7 +122,7 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
             <span style={{ color: '#f59e0b' }}>⚠️</span>
-            <span>SIMULATED VISITOR ON "{simulatedTargetWord}"</span>
+            <span>SIMULATED: {testMode.toUpperCase()}</span>
           </div>
           <span
             style={{
@@ -147,99 +134,99 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
               fontWeight: 800
             }}
           >
-            {simulationSecondsLeft}s REVERT
+            {testCountdown}s REVERT
           </span>
         </div>
       )}
 
-      {/* SECTION 1: EIGHT INTERACTIVE MECHANICS WITH ISOLATION SWITCHES */}
+      {/* SECTION 1: EIGHT RESTORED INTERACTIVE MECHANICS WITH ISOLATION SWITCHES */}
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 9, textTransform: 'uppercase', color: '#888', marginBottom: 6, fontWeight: 700 }}>
           CORE INSTALLATION MECHANICS (LIVE ON/OFF)
         </div>
 
-        {/* 1. Dwell Build */}
+        {/* 1. Physical Gestures */}
         <MechanicRow
-          title="1. Dwell Build"
-          description="Stillness builds weight on nearest word over 20s"
-          liveValue={telemetry.dwellStatus}
-          isActive={mechanicsSwitches.dwellBuild}
-          onToggle={() => onToggleMechanic('dwellBuild')}
-          activeColor="#38bdf8"
-        />
-
-        {/* 2. Settle */}
-        <MechanicRow
-          title="2. Settle"
-          description="Word locks heavy at max weight + plays low tone"
-          liveValue={`Settled (${telemetry.settledWordsCount}): ${telemetry.settledList}`}
-          isActive={mechanicsSwitches.settle}
-          onToggle={() => onToggleMechanic('settle')}
+          title="1. Physical Gestures"
+          description="Open palm = wide; Fist = max density (wght 900); 2 Hands = stretch"
+          liveValue={`Gesture: ${telemetry.gestureStateText}`}
+          isActive={mechanicsSwitches.gestures}
+          onToggle={() => onToggleMechanic('gestures')}
           activeColor="#4ade80"
         />
 
-        {/* 3. Residue */}
+        {/* 2. Hand Speed Ripple */}
         <MechanicRow
-          title="3. Residue Memory"
-          description="Lingering trace after visitors leave (~3 min half-life)"
-          liveValue={`Mean Residue: ${(telemetry.meanResidue * 100).toFixed(1)}% | T½: ${INSTALLATION_CONFIG.residueHalfLifeSeconds}s`}
-          isActive={mechanicsSwitches.residue}
-          onToggle={() => onToggleMechanic('residue')}
-          activeColor="#c084fc"
+          title="2. Hand Speed Ripple"
+          description="Fast movement briefly releases weight behind the hand (wake ripple)"
+          liveValue={`Speed: ${telemetry.handSpeedText} m/s`}
+          isActive={mechanicsSwitches.speedRipple}
+          onToggle={() => onToggleMechanic('speedRipple')}
+          activeColor="#38bdf8"
         />
 
-        {/* 4. Semantic Mass */}
+        {/* 3. Head Tracking */}
         <MechanicRow
-          title="4. Semantic Mass"
-          description="HEAVY/STAYS settle slow; NOTHING/UNTIL quick snap"
-          liveValue={telemetry.semanticMultiplierText}
-          isActive={mechanicsSwitches.semanticMass}
-          onToggle={() => onToggleMechanic('semanticMass')}
-          activeColor="#f59e0b"
-        />
-
-        {/* 5. Head Tracking */}
-        <MechanicRow
-          title="5. Head Tracking"
-          description="Mirrored head pos projects to nearest word target"
-          liveValue={`Head: ${telemetry.headScreenPosText} (${telemetry.trackedVisitorsCount} tracked)`}
+          title="3. Head Tracking"
+          description="Mirrored head position provides subtle gravitational anchor"
+          liveValue={`Nose: ${telemetry.headPosText}`}
           isActive={mechanicsSwitches.headTracking}
           onToggle={() => onToggleMechanic('headTracking')}
           activeColor="#60a5fa"
         />
 
-        {/* 6. Idle Life */}
+        {/* 4. Semantic Mass */}
         <MechanicRow
-          title="6. Idle Life (Empty Room)"
-          description="After 60s idle, one word swells/releases over 20s"
-          liveValue={telemetry.idleLifeStatus}
-          isActive={mechanicsSwitches.idleLife}
-          onToggle={() => onToggleMechanic('idleLife')}
+          title="4. Semantic Mass"
+          description="16 bound words: heavy words settle slow; light words snap back fast"
+          liveValue="Active (16 words bound)"
+          isActive={mechanicsSwitches.semanticMass}
+          onToggle={() => onToggleMechanic('semanticMass')}
+          activeColor="#f59e0b"
+        />
+
+        {/* 5. Residue Memory */}
+        <MechanicRow
+          title="5. Residue Memory"
+          description="Lingering trace where visitors interacted (~45s half-life, cap 500w)"
+          liveValue={`Mean: ${(telemetry.meanResidue * 100).toFixed(1)}% | T½: ${INSTALLATION_CONFIG.residueHalfLifeSeconds}s`}
+          isActive={mechanicsSwitches.residue}
+          onToggle={() => onToggleMechanic('residue')}
+          activeColor="#c084fc"
+        />
+
+        {/* 6. Attract Mode / Idle Life */}
+        <MechanicRow
+          title="6. Attract Mode (Empty Room)"
+          description="After 60s idle, sweeps a single gravitational wave across text every 25s"
+          liveValue={telemetry.idleStatus}
+          isActive={mechanicsSwitches.attractMode}
+          onToggle={() => onToggleMechanic('attractMode')}
           activeColor="#34d399"
         />
 
         {/* 7. Sound Architecture */}
         <MechanicRow
           title="7. Sound Architecture"
-          description="Stereo pan tracks word X; drone follows total weight"
-          liveValue={`Drone: ${(telemetry.droneLevel * 100).toFixed(0)}% | Pan: ${telemetry.currentPan} | Last: ${telemetry.lastToneText}`}
+          description="Subtle architectural drone follows canvas mean weight; settling thumps"
+          liveValue={`Drone: ${telemetry.droneActive ? 'ACTIVE' : 'SILENT'} | Mean: ${telemetry.meanWeight}w`}
           isActive={mechanicsSwitches.sound}
           onToggle={() => onToggleMechanic('sound')}
           activeColor="#eab308"
         />
 
-        {/* 8. Hand Tracking (Disabled flag) */}
+        {/* 8. Hand Tracking (Hands Active) */}
         <MechanicRow
-          title="8. Hands (Disabled Flag)"
-          description="Disabled by default; interaction driven by head dwell"
-          liveValue={mechanicsSwitches.hands ? 'Hands active (Flag ON)' : 'OFF (Disabled by default)'}
+          title="8. Hands (Hand Landmarker)"
+          description="Enabled by default: tracks up to 4 hands with palm centers"
+          liveValue={mechanicsSwitches.hands ? `Hands active (${telemetry.trackedHandsCount} tracked)` : 'OFF (Disabled)'}
           isActive={mechanicsSwitches.hands}
           onToggle={() => onToggleMechanic('hands')}
           activeColor="#ec4899"
         />
       </div>
 
-      {/* SECTION 2: WALL VISUALIZATION OVERLAYS (DISAPPEARS ON CLOSE) */}
+      {/* SECTION 2: WALL VISUALIZATION OVERLAYS (ONLY WHILE PANEL OPEN) */}
       <div style={{ marginBottom: 12, background: 'rgba(255, 255, 255, 0.03)', padding: 8, borderRadius: 5 }}>
         <div style={{ fontSize: 9, textTransform: 'uppercase', color: '#aaa', marginBottom: 6, fontWeight: 700 }}>
           WALL VISUALIZATION OVERLAYS (ONLY WHILE PANEL OPEN)
@@ -261,18 +248,6 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 9.5 }}>
             <input
               type="checkbox"
-              checked={wallVisualizations.dwellRings}
-              onChange={() => onToggleVisualization('dwellRings')}
-              style={{ cursor: 'pointer', accentColor: '#38bdf8' }}
-            />
-            <span style={{ color: wallVisualizations.dwellRings ? '#fff' : '#bbb' }}>
-              Dwell Rings
-            </span>
-          </label>
-
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 9.5 }}>
-            <input
-              type="checkbox"
               checked={wallVisualizations.residueHeatmap}
               onChange={() => onToggleVisualization('residueHeatmap')}
               style={{ cursor: 'pointer', accentColor: '#c084fc' }}
@@ -285,76 +260,136 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 9.5 }}>
             <input
               type="checkbox"
-              checked={wallVisualizations.wordLabels}
-              onChange={() => onToggleVisualization('wordLabels')}
-              style={{ cursor: 'pointer', accentColor: '#aaa' }}
+              checked={wallVisualizations.influenceDots}
+              onChange={() => onToggleVisualization('influenceDots')}
+              style={{ cursor: 'pointer', accentColor: '#4ade80' }}
             />
-            <span style={{ color: wallVisualizations.wordLabels ? '#fff' : '#bbb' }}>
-              Word Labels
+            <span style={{ color: wallVisualizations.influenceDots ? '#4ade80' : '#bbb' }}>
+              Influence Dots
             </span>
           </label>
         </div>
       </div>
 
-      {/* SECTION 3: SIMULATE VISITOR & CLEAR RESIDUE CONTROLS */}
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-        <select
-          value={selectedWord}
-          onChange={(e) => setSelectedWord(e.target.value)}
-          disabled={isSimulating}
-          style={{
-            flex: 1,
-            background: 'rgba(255, 255, 255, 0.08)',
-            border: '1px solid rgba(255, 255, 255, 0.2)',
-            color: '#fff',
-            borderRadius: 4,
-            padding: '5px 6px',
-            fontSize: 9.5,
-            fontFamily: 'inherit',
-            cursor: 'pointer'
-          }}
-        >
-          {availableWords.map((w) => (
-            <option key={w} value={w} style={{ background: '#111', color: '#fff' }}>
-              Target: {w}
-            </option>
-          ))}
-        </select>
-
-        <button
-          onClick={() => onSimulateVisitor(selectedWord)}
-          disabled={isSimulating}
-          style={{
-            flex: 1.3,
-            padding: '5px 8px',
-            background: isSimulating ? 'rgba(245, 158, 11, 0.3)' : 'rgba(56, 189, 248, 0.2)',
-            border: `1px solid ${isSimulating ? '#f59e0b' : '#38bdf8'}`,
-            color: isSimulating ? '#fef3c7' : '#38bdf8',
-            borderRadius: 4,
-            fontSize: 9.5,
-            fontWeight: 700,
-            cursor: isSimulating ? 'default' : 'pointer'
-          }}
-        >
-          {isSimulating ? `Simulating (${simulationSecondsLeft}s)` : `Simulate Visitor (${DWELL_SECONDS}s)`}
-        </button>
+      {/* SECTION 3: SIMULATED MODES & CLEAR RESIDUE CONTROLS */}
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ fontSize: 9, textTransform: 'uppercase', color: '#888', marginBottom: 4, fontWeight: 700 }}>
+          SIMULATED TEST MODES & CONTROLS
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+          <button
+            onClick={() => onSetTestMode('live')}
+            style={{
+              flex: 1,
+              minWidth: 50,
+              padding: '4px 6px',
+              borderRadius: 3,
+              fontSize: 9,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              border: testMode === 'live' ? '1px solid #4ade80' : '1px solid rgba(255,255,255,0.1)',
+              background: testMode === 'live' ? 'rgba(74, 222, 128, 0.25)' : 'rgba(255,255,255,0.04)',
+              color: testMode === 'live' ? '#4ade80' : '#aaa',
+              fontWeight: 700
+            }}
+          >
+            [0] Live
+          </button>
+          <button
+            onClick={() => onSetTestMode('fist')}
+            style={{
+              flex: 1,
+              minWidth: 50,
+              padding: '4px 6px',
+              borderRadius: 3,
+              fontSize: 9,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              border: testMode === 'fist' ? '1px solid #f43f5e' : '1px solid rgba(255,255,255,0.1)',
+              background: testMode === 'fist' ? 'rgba(244, 63, 94, 0.25)' : 'rgba(255,255,255,0.04)',
+              color: testMode === 'fist' ? '#f43f5e' : '#aaa',
+              fontWeight: 700
+            }}
+          >
+            [1] Fist
+          </button>
+          <button
+            onClick={() => onSetTestMode('two_hands')}
+            style={{
+              flex: 1,
+              minWidth: 60,
+              padding: '4px 6px',
+              borderRadius: 3,
+              fontSize: 9,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              border: testMode === 'two_hands' ? '1px solid #38bdf8' : '1px solid rgba(255,255,255,0.1)',
+              background: testMode === 'two_hands' ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255,255,255,0.04)',
+              color: testMode === 'two_hands' ? '#38bdf8' : '#aaa',
+              fontWeight: 700
+            }}
+          >
+            [2] Stretch
+          </button>
+          <button
+            onClick={() => onSetTestMode('wave_residue')}
+            style={{
+              flex: 1,
+              minWidth: 60,
+              padding: '4px 6px',
+              borderRadius: 3,
+              fontSize: 9,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              border: testMode === 'wave_residue' ? '1px solid #c084fc' : '1px solid rgba(255,255,255,0.1)',
+              background: testMode === 'wave_residue' ? 'rgba(192, 132, 252, 0.25)' : 'rgba(255,255,255,0.04)',
+              color: testMode === 'wave_residue' ? '#c084fc' : '#aaa',
+              fontWeight: 700
+            }}
+          >
+            [3] Residue Wave
+          </button>
+          <button
+            onClick={() => onSetTestMode('idle')}
+            style={{
+              flex: 1,
+              minWidth: 45,
+              padding: '4px 6px',
+              borderRadius: 3,
+              fontSize: 9,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              border: testMode === 'idle' ? '1px solid #94a3b8' : '1px solid rgba(255,255,255,0.1)',
+              background: testMode === 'idle' ? 'rgba(148, 163, 184, 0.25)' : 'rgba(255,255,255,0.04)',
+              color: testMode === 'idle' ? '#94a3b8' : '#aaa',
+              fontWeight: 700
+            }}
+          >
+            [4] Idle
+          </button>
+        </div>
 
         <button
           onClick={onClearResidue}
-          title="Instant clear residue [R key]"
           style={{
-            padding: '5px 8px',
-            background: 'rgba(239, 68, 68, 0.15)',
-            border: '1px solid rgba(239, 68, 68, 0.4)',
-            color: '#f87171',
+            width: '100%',
+            background: 'rgba(244, 63, 94, 0.15)',
+            border: '1px solid rgba(244, 63, 94, 0.35)',
+            color: '#f43f5e',
             borderRadius: 4,
+            padding: '6px 10px',
             fontSize: 9.5,
             fontWeight: 700,
-            cursor: 'pointer'
+            cursor: 'pointer',
+            fontFamily: 'inherit'
           }}
         >
-          Clear (R)
+          🧹 Clear All Residue Memory [R]
         </button>
+      </div>
+
+      <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 6, fontSize: 8.5, color: '#666', textAlign: 'center' }}>
+        Ctrl+Shift+H to close • Ctrl+Shift+D for Profiler • R to clear residue • F fullscreen kiosk
       </div>
     </div>
   );
@@ -380,41 +415,44 @@ const MechanicRow: React.FC<MechanicRowProps> = ({
   return (
     <div
       style={{
-        borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
-        padding: '5px 0',
         display: 'flex',
-        flexDirection: 'column',
-        gap: 2
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '5px 8px',
+        marginBottom: 4,
+        background: isActive ? 'rgba(255, 255, 255, 0.04)' : 'rgba(255, 255, 255, 0.01)',
+        border: `1px solid ${isActive ? 'rgba(255, 255, 255, 0.1)' : 'rgba(255, 255, 255, 0.04)'}`,
+        borderRadius: 4,
+        opacity: isActive ? 1.0 : 0.6
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ flex: 1, marginRight: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontWeight: 700, color: isActive ? activeColor : '#666', fontSize: 10 }}>
+          <span style={{ fontWeight: 700, color: isActive ? activeColor : '#888', fontSize: 10 }}>
             {title}
           </span>
-          <span style={{ color: '#777', fontSize: 8.5 }}>
-            {description}
-          </span>
         </div>
-        <button
-          onClick={onToggle}
-          style={{
-            padding: '1px 6px',
-            fontSize: 8.5,
-            fontWeight: 800,
-            borderRadius: 3,
-            background: isActive ? `${activeColor}25` : 'rgba(255, 255, 255, 0.05)',
-            color: isActive ? activeColor : '#666',
-            border: `1px solid ${isActive ? `${activeColor}60` : 'rgba(255, 255, 255, 0.1)'}`,
-            cursor: 'pointer'
-          }}
-        >
-          {isActive ? 'ON' : 'OFF'}
-        </button>
+        <div style={{ fontSize: 8.5, color: '#888', margin: '1px 0' }}>{description}</div>
+        <div style={{ fontSize: 9, color: isActive ? '#eee' : '#555', fontStyle: 'italic' }}>
+          {liveValue}
+        </div>
       </div>
-      <div style={{ fontSize: 8.5, color: '#aaa', paddingLeft: 4, fontStyle: 'italic' }}>
-        Live: {liveValue}
-      </div>
+      <button
+        onClick={onToggle}
+        style={{
+          background: isActive ? activeColor : 'rgba(255, 255, 255, 0.08)',
+          color: isActive ? '#0a0a0a' : '#888',
+          border: 'none',
+          borderRadius: 3,
+          padding: '2px 7px',
+          fontWeight: 800,
+          fontSize: 9,
+          cursor: 'pointer',
+          letterSpacing: 0.5
+        }}
+      >
+        {isActive ? 'ON' : 'OFF'}
+      </button>
     </div>
   );
 };

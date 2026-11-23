@@ -19,11 +19,14 @@ interface DebugOverlayProps {
   trackedHands: TrackedHand[];
   cameraStatus: CameraStatus;
   videoElement: HTMLVideoElement | null;
+  testMode?: 'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle';
+  testCountdown?: number;
   isFullscreen?: boolean;
-  showInfluencePoints?: boolean;
-  onToggleShowInfluencePoints?: () => void;
-  showResidueHeatmap?: boolean;
-  onToggleShowResidueHeatmap?: () => void;
+  onSetTestMode?: (mode: 'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle') => void;
+  showInfluencePoints: boolean;
+  onToggleShowInfluencePoints: () => void;
+  showResidueHeatmap: boolean;
+  onToggleShowResidueHeatmap: () => void;
   isMuted?: boolean;
 }
 
@@ -38,6 +41,15 @@ const POSE_CONNECTIONS: [number, number][] = [
   [11, 0], [12, 0] // neck/nose
 ];
 
+const HAND_CONNECTIONS: [number, number][] = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [17, 18], [18, 19], [19, 20],
+  [0, 17]
+];
+
 export const DebugOverlay: React.FC<DebugOverlayProps> = ({
   isVisible,
   fps,
@@ -47,13 +59,23 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
   currentAxes,
   avgAxes,
   trackedPeople,
+  trackedHands,
   cameraStatus,
-  videoElement
+  videoElement,
+  testMode = 'live',
+  testCountdown = 0,
+  isFullscreen = false,
+  onSetTestMode,
+  showInfluencePoints,
+  onToggleShowInfluencePoints,
+  showResidueHeatmap,
+  onToggleShowResidueHeatmap,
+  isMuted = false
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastPreviewDrawTimeRef = useRef<number>(0);
 
-  // Draw webcam preview at low resolution (180x80) and capped at 15 FPS
+  // Draw webcam preview at low resolution (180x95) and capped at 15 FPS
   useEffect(() => {
     if (!isVisible) return;
     const canvas = canvasRef.current;
@@ -95,7 +117,7 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
           const lms = person.landmarks;
           if (!lms || lms.length === 0) return;
           ctx.lineWidth = 1.4;
-          ctx.strokeStyle = person.isStill ? '#4ade80' : 'rgba(96, 165, 250, 0.8)';
+          ctx.strokeStyle = 'rgba(96, 165, 250, 0.8)';
 
           POSE_CONNECTIONS.forEach(([startIdx, endIdx]) => {
             const p1 = lms[startIdx];
@@ -113,11 +135,48 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
             if (pt && (pt.visibility ?? 1) > 0.4) {
               ctx.beginPath();
               ctx.arc(pt.x * width, pt.y * height, 2.5, 0, Math.PI * 2);
-              ctx.fillStyle = idx === 0 ? (person.isStill ? '#4ade80' : '#f59e0b') : '#60a5fa';
+              ctx.fillStyle = idx === 0 ? '#4ade80' : '#60a5fa';
               ctx.fill();
             }
           });
         });
+
+        // Draw Hands
+        trackedHands.forEach((hand) => {
+          const lms = hand.landmarks;
+          if (!lms || lms.length === 0) return;
+          ctx.lineWidth = 1.2;
+          ctx.strokeStyle = hand.isFist ? '#f43f5e' : '#4ade80';
+
+          HAND_CONNECTIONS.forEach(([startIdx, endIdx]) => {
+            const p1 = lms[startIdx];
+            const p2 = lms[endIdx];
+            if (p1 && p2) {
+              ctx.beginPath();
+              ctx.moveTo(p1.x * width, p1.y * height);
+              ctx.lineTo(p2.x * width, p2.y * height);
+              ctx.stroke();
+            }
+          });
+
+          const px = hand.palmX * width;
+          const py = hand.palmY * height;
+          ctx.beginPath();
+          ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+          ctx.fillStyle = hand.isFist ? '#f43f5e' : '#4ade80';
+          ctx.fill();
+        });
+
+        // Prominent SIMULATED banner across the preview canvas when in simulated test mode
+        if (testMode !== 'live') {
+          ctx.fillStyle = 'rgba(245, 158, 11, 0.9)';
+          ctx.fillRect(0, 0, width, 18);
+          ctx.fillStyle = '#0a0a0a';
+          ctx.font = 'bold 8.5px monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(`SIMULATED: ${testMode.toUpperCase()} (${testCountdown}s)`, width / 2, 9);
+        }
       }
 
       animId = requestAnimationFrame(drawPreview);
@@ -125,11 +184,12 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
 
     animId = requestAnimationFrame(drawPreview);
     return () => cancelAnimationFrame(animId);
-  }, [isVisible, trackedPeople, videoElement, cameraStatus]);
+  }, [isVisible, trackedPeople, trackedHands, videoElement, cameraStatus, testMode, testCountdown]);
 
   if (!isVisible) return null;
 
   const totalFrameMs = Number((timings.updateMs + timings.renderMs).toFixed(1));
+  const primaryHand = trackedHands[0];
   const primaryPerson = trackedPeople[0];
   const screenW = typeof window !== 'undefined' ? window.innerWidth : 1920;
   const screenH = typeof window !== 'undefined' ? window.innerHeight : 1080;
@@ -144,8 +204,8 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
         position: 'fixed',
         top: 20,
         right: 20,
-        zIndex: 998,
-        width: 320,
+        zIndex: 100,
+        width: 326,
         background: 'rgba(10, 10, 10, 0.95)',
         backdropFilter: 'blur(16px)',
         border: '1px solid rgba(255, 255, 255, 0.15)',
@@ -170,7 +230,7 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
         }}
       >
         <span style={{ fontWeight: 600, letterSpacing: 0.8, textTransform: 'uppercase', color: '#fff', fontSize: 11 }}>
-          PROFILER [Ctrl+Shift+D]
+          CONCEPT & PROFILER [D]
         </span>
         <div style={{ display: 'flex', gap: 6 }}>
           <span
@@ -200,6 +260,41 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
         </div>
       </div>
 
+      {/* SIMULATED MODE BANNER (Auto-reverts to Live after 10s) */}
+      {testMode !== 'live' && (
+        <div
+          style={{
+            background: 'rgba(245, 158, 11, 0.22)',
+            border: '1px solid #f59e0b',
+            borderRadius: 4,
+            padding: '5px 8px',
+            marginBottom: 8,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            color: '#fef3c7',
+            fontSize: 9.5
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontWeight: 700 }}>
+            <span style={{ color: '#f59e0b' }}>⚠️</span>
+            <span>SIMULATED: {testMode.toUpperCase()}</span>
+          </div>
+          <div
+            style={{
+              background: '#f59e0b',
+              color: '#0a0a0a',
+              padding: '1px 5px',
+              borderRadius: 3,
+              fontSize: 8.5,
+              fontWeight: 800
+            }}
+          >
+            {testCountdown}s AUTO-REVERT
+          </div>
+        </div>
+      )}
+
       {/* Frame Timing Breakdown (Target: < 8ms) */}
       <div style={{ marginBottom: 8, background: 'rgba(255,255,255,0.03)', padding: 6, borderRadius: 4 }}>
         <div style={{ color: '#888', marginBottom: 3, textTransform: 'uppercase', fontSize: 8.5, display: 'flex', justifyContent: 'space-between' }}>
@@ -209,11 +304,11 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
           </span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ color: '#aaa' }}>1. Detection (CV, decoupled):</span>
+          <span style={{ color: '#aaa' }}>1. Detection (CV, staggered):</span>
           <span style={{ color: '#60a5fa', fontWeight: 600 }}>{timings.detectionMs} ms</span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ color: '#aaa' }}>2. Update (Dwell/Physics/Residue):</span>
+          <span style={{ color: '#aaa' }}>2. Update (Spatial/Residue/Mass):</span>
           <span style={{ color: '#fff' }}>{timings.updateMs} ms</span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -222,28 +317,79 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
         </div>
       </div>
 
-      {/* Hardware Status */}
+      {/* Concept Layer Status */}
       <div style={{ marginBottom: 8 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-          <span style={{ color: '#aaa' }}>CV Delegate:</span>
-          <span style={{ color: activeDelegate.includes('GPU') ? '#4ade80' : '#f59e0b', fontWeight: 600 }}>
+          <span style={{ color: '#aaa' }}>Semantic Mass:</span>
+          <span style={{ color: '#4ade80', fontWeight: 600 }}>Active (16 words bound)</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+          <span style={{ color: '#aaa' }}>Residue Memory:</span>
+          <span>45s half-life (cap 500w)</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+          <span style={{ color: '#aaa' }}>Gesture State:</span>
+          <span style={{ color: primaryHand?.isFist ? '#f43f5e' : primaryHand?.isOpen ? '#4ade80' : '#aaa', fontWeight: 700 }}>
+            {primaryHand ? (primaryHand.isFist ? 'FIST (MAX WEIGHT)' : 'OPEN PALM') : 'None'}
+          </span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+          <span style={{ color: '#aaa' }}>Nose Pos:</span>
+          <span style={{ color: noseScreenX !== null ? '#aaa' : '#666' }}>
+            {noseScreenX !== null ? `(${noseScreenX}px, ${noseScreenY}px)` : 'None'}
+          </span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+          <span style={{ color: '#aaa' }}>Delegate:</span>
+          <span style={{ color: activeDelegate.includes('GPU') ? '#4ade80' : '#fbbf24', fontWeight: 700 }}>
             {activeDelegate}
           </span>
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-          <span style={{ color: '#aaa' }}>Camera:</span>
-          <span style={{ color: cameraStatus === 'active' ? '#4ade80' : '#ef4444' }}>
-            ● {cameraStatus.toUpperCase()}
+      </div>
+
+      {/* Concept Toggles */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+        <div
+          onClick={onToggleShowInfluencePoints}
+          style={{
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '4px 6px',
+            background: showInfluencePoints ? 'rgba(74, 222, 128, 0.15)' : 'rgba(255, 255, 255, 0.04)',
+            border: `1px solid ${showInfluencePoints ? 'rgba(74, 222, 128, 0.4)' : 'rgba(255, 255, 255, 0.1)'}`,
+            borderRadius: 4,
+            cursor: 'pointer'
+          }}
+        >
+          <span style={{ color: showInfluencePoints ? '#4ade80' : '#aaa', fontSize: 9 }}>
+            Influence Dots
+          </span>
+          <span style={{ color: showInfluencePoints ? '#4ade80' : '#666', fontWeight: 700, fontSize: 8.5 }}>
+            {showInfluencePoints ? 'ON' : 'OFF'}
           </span>
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-          <span style={{ color: '#aaa' }}>Tracked Poses:</span>
-          <span>{trackedPeople.length} (Max 4)</span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-          <span style={{ color: '#aaa' }}>Primary Nose Pos:</span>
-          <span style={{ color: noseScreenX !== null ? '#aaa' : '#666' }}>
-            {noseScreenX !== null ? `(${noseScreenX}px, ${noseScreenY}px)` : 'None'}
+
+        <div
+          onClick={onToggleShowResidueHeatmap}
+          style={{
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '4px 6px',
+            background: showResidueHeatmap ? 'rgba(168, 85, 247, 0.2)' : 'rgba(255, 255, 255, 0.04)',
+            border: `1px solid ${showResidueHeatmap ? 'rgba(168, 85, 247, 0.5)' : 'rgba(255, 255, 255, 0.1)'}`,
+            borderRadius: 4,
+            cursor: 'pointer'
+          }}
+        >
+          <span style={{ color: showResidueHeatmap ? '#c084fc' : '#aaa', fontSize: 9 }}>
+            Residue Ghost
+          </span>
+          <span style={{ color: showResidueHeatmap ? '#c084fc' : '#666', fontWeight: 700, fontSize: 8.5 }}>
+            {showResidueHeatmap ? 'ON' : 'OFF'}
           </span>
         </div>
       </div>
@@ -277,6 +423,109 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
         </div>
       </div>
 
+      {/* Concept Verification Test Buttons */}
+      <div style={{ marginBottom: 8 }}>
+        {isFullscreen ? (
+          <div
+            style={{
+              padding: '6px 8px',
+              borderRadius: 4,
+              background: 'rgba(255, 255, 255, 0.03)',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              color: '#888',
+              fontSize: 8.5,
+              textAlign: 'center',
+              letterSpacing: 0.3
+            }}
+          >
+            🔒 TEST BUTTONS DISABLED IN FULLSCREEN KIOSK
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+            <button
+              onClick={() => onSetTestMode?.('live')}
+              style={{
+                flex: 1,
+                minWidth: 45,
+                padding: '3px 2px',
+                fontSize: 8.5,
+                borderRadius: 3,
+                background: testMode === 'live' ? 'rgba(74, 222, 128, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                color: testMode === 'live' ? '#4ade80' : '#888',
+                border: `1px solid ${testMode === 'live' ? 'rgba(74, 222, 128, 0.5)' : 'rgba(255, 255, 255, 0.1)'}`,
+                cursor: 'pointer'
+              }}
+            >
+              [0] Live
+            </button>
+            <button
+              onClick={() => onSetTestMode?.('fist')}
+              style={{
+                flex: 1.2,
+                minWidth: 60,
+                padding: '3px 2px',
+                fontSize: 8.5,
+                borderRadius: 3,
+                background: testMode === 'fist' ? 'rgba(244, 63, 94, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                color: testMode === 'fist' ? '#f43f5e' : '#888',
+                border: `1px solid ${testMode === 'fist' ? 'rgba(244, 63, 94, 0.5)' : 'rgba(255, 255, 255, 0.1)'}`,
+                cursor: 'pointer'
+              }}
+            >
+              [1] Fist
+            </button>
+            <button
+              onClick={() => onSetTestMode?.('two_hands')}
+              style={{
+                flex: 1.4,
+                minWidth: 80,
+                padding: '3px 2px',
+                fontSize: 8.5,
+                borderRadius: 3,
+                background: testMode === 'two_hands' ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                color: testMode === 'two_hands' ? '#38bdf8' : '#888',
+                border: `1px solid ${testMode === 'two_hands' ? 'rgba(56, 189, 248, 0.5)' : 'rgba(255, 255, 255, 0.1)'}`,
+                cursor: 'pointer'
+              }}
+            >
+              [2] 2-Hand Stretch
+            </button>
+            <button
+              onClick={() => onSetTestMode?.('wave_residue')}
+              style={{
+                flex: 1.4,
+                minWidth: 80,
+                padding: '3px 2px',
+                fontSize: 8.5,
+                borderRadius: 3,
+                background: testMode === 'wave_residue' ? 'rgba(168, 85, 247, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                color: testMode === 'wave_residue' ? '#c084fc' : '#888',
+                border: `1px solid ${testMode === 'wave_residue' ? 'rgba(168, 85, 247, 0.5)' : 'rgba(255, 255, 255, 0.1)'}`,
+                cursor: 'pointer'
+              }}
+            >
+              [3] Wave Residue
+            </button>
+            <button
+              onClick={() => onSetTestMode?.('idle')}
+              style={{
+                flex: 1,
+                minWidth: 45,
+                padding: '3px 2px',
+                fontSize: 8.5,
+                borderRadius: 3,
+                background: testMode === 'idle' ? 'rgba(255, 255, 255, 0.15)' : 'rgba(255, 255, 255, 0.05)',
+                color: testMode === 'idle' ? '#fff' : '#888',
+                border: `1px solid ${testMode === 'idle' ? 'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.1)'}`,
+                cursor: 'pointer'
+              }}
+            >
+              [4] Idle
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Typography Mass Telemetry */}
       <div style={{ borderTop: '1px solid rgba(255, 255, 255, 0.08)', paddingTop: 6, marginBottom: 6 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
@@ -285,38 +534,32 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <span style={{ color: '#aaa' }}>Canvas Mean Weight:</span>
-          <span style={{ color: '#fff', fontWeight: 600 }}>{avgAxes.wght}</span>
+          <span style={{ color: avgAxes.wght > 300 ? '#4ade80' : '#f4f3ee', fontWeight: 700 }}>
+            {avgAxes.wght}
+          </span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ color: '#aaa' }}>Web Audio:</span>
+          <span style={{ color: isMuted ? '#ef4444' : '#4ade80', fontWeight: 600 }}>
+            {isMuted ? 'MUTED [M]' : avgAxes.wght > 230 ? 'DRONE ACTIVE' : 'SILENT (IDLE)'}
+          </span>
         </div>
       </div>
 
-      {/* Keyboard Shortcuts */}
+      {/* Footer */}
       <div
         style={{
           borderTop: '1px solid rgba(255, 255, 255, 0.08)',
-          paddingTop: 6,
+          paddingTop: 4,
           fontSize: 8.5,
-          color: '#777',
+          color: '#666',
           display: 'flex',
-          flexDirection: 'column',
-          gap: 2
+          justifyContent: 'space-between'
         }}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>Mechanics Isolation:</span>
-          <span style={{ color: '#aaa' }}>Ctrl+Shift+H</span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>Kiosk Fullscreen:</span>
-          <span style={{ color: '#aaa' }}>F</span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>Instant Clear Residue:</span>
-          <span style={{ color: '#aaa' }}>R</span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>Mute Audio:</span>
-          <span style={{ color: '#aaa' }}>M</span>
-        </div>
+        <span>[D] Debug</span>
+        <span>[F] Fullscreen</span>
+        <span>[M] Mute</span>
       </div>
     </div>
   );

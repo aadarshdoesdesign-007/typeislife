@@ -1,0 +1,60 @@
+@import '@fontsource-variable/roboto-flex/full.css';
+
+:root {
+  --bg-void: #080808;
+  --text-bone: #f4f3ee;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-void);
+  font-family: 'Roboto Flex Variable', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom styled inputs for controls */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.1);
+  height: 4px;
+  border-radius: 2px;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f4f3ee;
+  cursor: pointer;
+  border: 2px solid #080808;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f4f3ee;
+  cursor: pointer;
+  border: 2px solid #080808;
+}
+
+/* Hide cursor when user inactive */
+body.hide-cursor {
+  cursor: none !important;
+}
