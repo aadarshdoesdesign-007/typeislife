@@ -12,9 +12,9 @@ interface MechanicsPanelProps {
   telemetry: MechanicsLiveTelemetry;
   fps: number;
   renderMs: number;
-  testMode: 'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle';
+  testMode: string;
   testCountdown: number;
-  onSetTestMode: (mode: 'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle') => void;
+  onSetTestMode: (mode: any) => void;
   onClearResidue: () => void;
 }
 
@@ -42,10 +42,10 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
         top: 20,
         left: 20,
         zIndex: 999,
-        width: 390,
+        width: 410,
         maxHeight: 'calc(100vh - 40px)',
         overflowY: 'auto',
-        background: 'rgba(8, 8, 8, 0.94)',
+        background: 'rgba(8, 8, 8, 0.95)',
         backdropFilter: 'blur(20px)',
         border: '1px solid rgba(255, 255, 255, 0.16)',
         borderRadius: 8,
@@ -139,94 +139,108 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
         </div>
       )}
 
-      {/* SECTION 1: EIGHT RESTORED INTERACTIVE MECHANICS WITH ISOLATION SWITCHES */}
+      {/* SECTION 1: INTERACTIVE MECHANICS WITH INDIVIDUAL ISOLATION SWITCHES */}
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 9, textTransform: 'uppercase', color: '#888', marginBottom: 6, fontWeight: 700 }}>
-          CORE INSTALLATION MECHANICS (LIVE ON/OFF)
+          NEW INTERACTION MECHANICS (PHASES 0 - 3)
         </div>
 
-        {/* 1. Physical Gestures */}
+        {/* Phase 0: Contrast Guard */}
         <MechanicRow
-          title="1. Physical Gestures"
-          description="Open palm = wide; Fist = max density (wght 900); 2 Hands = stretch"
+          title="P0. Contrast Guard"
+          description="Cap residue at +150w; T½ 30s; slow pull toward ~230-250w"
+          liveValue={`Target Idle: 200-260w | Mean: ${telemetry.meanWeight}w | T½: ${INSTALLATION_CONFIG.residueHalfLifeSeconds}s`}
+          isActive={mechanicsSwitches.contrastGuard}
+          onToggle={() => onToggleMechanic('contrastGuard')}
+          activeColor="#38bdf8"
+        />
+
+        {/* Phase 1: Gravity & Drift */}
+        <MechanicRow
+          title="P1. Physical Gravity"
+          description="Heavy words sag up to 8px; light words lift 6px & drift 2-3px"
+          liveValue="Offset draw position only; zero reflow"
+          isActive={mechanicsSwitches.gravity}
+          onToggle={() => onToggleMechanic('gravity')}
+          activeColor="#a3e635"
+        />
+
+        {/* Phase 2: Body Silhouette Segmentation */}
+        <MechanicRow
+          title="P2. Body Silhouette"
+          description="MediaPipe 128x72 mask at 18fps; smooth max blend; fallback < 40fps"
+          liveValue={`Coverage: ${telemetry.silhouetteCoverage.toFixed(1)}% | Seg FPS: ${telemetry.silhouetteFps}`}
+          isActive={mechanicsSwitches.bodySilhouette}
+          onToggle={() => onToggleMechanic('bodySilhouette')}
+          activeColor="#3b82f6"
+        />
+
+        {/* Phase 3: Drop Gesture */}
+        <MechanicRow
+          title="P3. Drop Gesture"
+          description="Fist held >=300ms released to palm drops letters 12-20px + thud"
+          liveValue={`Status: ${telemetry.lastDropInfo} | Rate-limit: 1.5s`}
+          isActive={mechanicsSwitches.dropGesture}
+          onToggle={() => onToggleMechanic('dropGesture')}
+          activeColor="#f43f5e"
+        />
+
+        <div style={{ fontSize: 9, textTransform: 'uppercase', color: '#888', marginTop: 8, marginBottom: 6, fontWeight: 700 }}>
+          CORE BASELINE MECHANICS
+        </div>
+
+        {/* Physical Gestures */}
+        <MechanicRow
+          title="Gestures (Palm/Fist/Stretch)"
+          description="Open palm = wide; Fist = peak wght 900; 2 Hands = width stretch"
           liveValue={`Gesture: ${telemetry.gestureStateText}`}
           isActive={mechanicsSwitches.gestures}
           onToggle={() => onToggleMechanic('gestures')}
           activeColor="#4ade80"
         />
 
-        {/* 2. Hand Speed Ripple */}
+        {/* Semantic Mass */}
         <MechanicRow
-          title="2. Hand Speed Ripple"
-          description="Fast movement briefly releases weight behind the hand (wake ripple)"
-          liveValue={`Speed: ${telemetry.handSpeedText} m/s`}
-          isActive={mechanicsSwitches.speedRipple}
-          onToggle={() => onToggleMechanic('speedRipple')}
-          activeColor="#38bdf8"
-        />
-
-        {/* 3. Head Tracking */}
-        <MechanicRow
-          title="3. Head Tracking"
-          description="Mirrored head position provides subtle gravitational anchor"
-          liveValue={`Nose: ${telemetry.headPosText}`}
-          isActive={mechanicsSwitches.headTracking}
-          onToggle={() => onToggleMechanic('headTracking')}
-          activeColor="#60a5fa"
-        />
-
-        {/* 4. Semantic Mass */}
-        <MechanicRow
-          title="4. Semantic Mass"
-          description="16 bound words: heavy words settle slow; light words snap back fast"
-          liveValue="Active (16 words bound)"
+          title="Semantic Mass (16 Words)"
+          description="Heavy words settle sluggishly (2.5x); light words snap back fast"
+          liveValue="Active (16 exhibition words bound)"
           isActive={mechanicsSwitches.semanticMass}
           onToggle={() => onToggleMechanic('semanticMass')}
           activeColor="#f59e0b"
         />
 
-        {/* 5. Residue Memory */}
+        {/* Residue Memory */}
         <MechanicRow
-          title="5. Residue Memory"
-          description="Lingering trace where visitors interacted (~45s half-life, cap 500w)"
-          liveValue={`Mean: ${(telemetry.meanResidue * 100).toFixed(1)}% | T½: ${INSTALLATION_CONFIG.residueHalfLifeSeconds}s`}
+          title="Residue Memory"
+          description="Faint ghost imprints where visitors stood or gestured"
+          liveValue={`Mean Residue: ${(telemetry.meanResidue * 100).toFixed(1)}%`}
           isActive={mechanicsSwitches.residue}
           onToggle={() => onToggleMechanic('residue')}
           activeColor="#c084fc"
         />
 
-        {/* 6. Attract Mode / Idle Life */}
+        {/* Attract Mode */}
         <MechanicRow
-          title="6. Attract Mode (Empty Room)"
-          description="After 60s idle, sweeps a single gravitational wave across text every 25s"
+          title="Attract Mode Wave"
+          description="After 60s idle, sweeps a single gravitational wave every 25s"
           liveValue={telemetry.idleStatus}
           isActive={mechanicsSwitches.attractMode}
           onToggle={() => onToggleMechanic('attractMode')}
           activeColor="#34d399"
         />
 
-        {/* 7. Sound Architecture */}
+        {/* Sound Architecture */}
         <MechanicRow
-          title="7. Sound Architecture"
-          description="Subtle architectural drone follows canvas mean weight; settling thumps"
-          liveValue={`Drone: ${telemetry.droneActive ? 'ACTIVE' : 'SILENT'} | Mean: ${telemetry.meanWeight}w`}
+          title="Sound Architecture"
+          description="Architectural drone follows mean weight; settling & drop thuds"
+          liveValue={`Drone: ${telemetry.droneActive ? 'ACTIVE' : 'SILENT'}`}
           isActive={mechanicsSwitches.sound}
           onToggle={() => onToggleMechanic('sound')}
           activeColor="#eab308"
         />
-
-        {/* 8. Hand Tracking (Hands Active) */}
-        <MechanicRow
-          title="8. Hands (Hand Landmarker)"
-          description="Enabled by default: tracks up to 4 hands with palm centers"
-          liveValue={mechanicsSwitches.hands ? `Hands active (${telemetry.trackedHandsCount} tracked)` : 'OFF (Disabled)'}
-          isActive={mechanicsSwitches.hands}
-          onToggle={() => onToggleMechanic('hands')}
-          activeColor="#ec4899"
-        />
       </div>
 
-      {/* SECTION 2: WALL VISUALIZATION OVERLAYS (ONLY WHILE PANEL OPEN) */}
+      {/* SECTION 2: WALL VISUALIZATION OVERLAYS */}
       <div style={{ marginBottom: 12, background: 'rgba(255, 255, 255, 0.03)', padding: 8, borderRadius: 5 }}>
         <div style={{ fontSize: 9, textTransform: 'uppercase', color: '#aaa', marginBottom: 6, fontWeight: 700 }}>
           WALL VISUALIZATION OVERLAYS (ONLY WHILE PANEL OPEN)
@@ -248,12 +262,24 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 9.5 }}>
             <input
               type="checkbox"
+              checked={wallVisualizations.maskOutline}
+              onChange={() => onToggleVisualization('maskOutline')}
+              style={{ cursor: 'pointer', accentColor: '#3b82f6' }}
+            />
+            <span style={{ color: wallVisualizations.maskOutline ? '#3b82f6' : '#bbb', fontWeight: 600 }}>
+              Mask Outline
+            </span>
+          </label>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 9.5 }}>
+            <input
+              type="checkbox"
               checked={wallVisualizations.residueHeatmap}
               onChange={() => onToggleVisualization('residueHeatmap')}
               style={{ cursor: 'pointer', accentColor: '#c084fc' }}
             />
             <span style={{ color: wallVisualizations.residueHeatmap ? '#c084fc' : '#bbb' }}>
-              Residue Heatmap
+              Residue Ghost
             </span>
           </label>
 
@@ -271,10 +297,10 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
         </div>
       </div>
 
-      {/* SECTION 3: SIMULATED MODES & CLEAR RESIDUE CONTROLS */}
+      {/* SECTION 3: PHASE SIMULATION BUTTONS */}
       <div style={{ marginBottom: 8 }}>
         <div style={{ fontSize: 9, textTransform: 'uppercase', color: '#888', marginBottom: 4, fontWeight: 700 }}>
-          SIMULATED TEST MODES & CONTROLS
+          PHASE VERIFICATION SIMULATIONS
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
           <button
@@ -296,76 +322,76 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
             [0] Live
           </button>
           <button
-            onClick={() => onSetTestMode('fist')}
-            style={{
-              flex: 1,
-              minWidth: 50,
-              padding: '4px 6px',
-              borderRadius: 3,
-              fontSize: 9,
-              fontFamily: 'inherit',
-              cursor: 'pointer',
-              border: testMode === 'fist' ? '1px solid #f43f5e' : '1px solid rgba(255,255,255,0.1)',
-              background: testMode === 'fist' ? 'rgba(244, 63, 94, 0.25)' : 'rgba(255,255,255,0.04)',
-              color: testMode === 'fist' ? '#f43f5e' : '#aaa',
-              fontWeight: 700
-            }}
-          >
-            [1] Fist
-          </button>
-          <button
-            onClick={() => onSetTestMode('two_hands')}
-            style={{
-              flex: 1,
-              minWidth: 60,
-              padding: '4px 6px',
-              borderRadius: 3,
-              fontSize: 9,
-              fontFamily: 'inherit',
-              cursor: 'pointer',
-              border: testMode === 'two_hands' ? '1px solid #38bdf8' : '1px solid rgba(255,255,255,0.1)',
-              background: testMode === 'two_hands' ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255,255,255,0.04)',
-              color: testMode === 'two_hands' ? '#38bdf8' : '#aaa',
-              fontWeight: 700
-            }}
-          >
-            [2] Stretch
-          </button>
-          <button
-            onClick={() => onSetTestMode('wave_residue')}
-            style={{
-              flex: 1,
-              minWidth: 60,
-              padding: '4px 6px',
-              borderRadius: 3,
-              fontSize: 9,
-              fontFamily: 'inherit',
-              cursor: 'pointer',
-              border: testMode === 'wave_residue' ? '1px solid #c084fc' : '1px solid rgba(255,255,255,0.1)',
-              background: testMode === 'wave_residue' ? 'rgba(192, 132, 252, 0.25)' : 'rgba(255,255,255,0.04)',
-              color: testMode === 'wave_residue' ? '#c084fc' : '#aaa',
-              fontWeight: 700
-            }}
-          >
-            [3] Residue Wave
-          </button>
-          <button
             onClick={() => onSetTestMode('idle')}
             style={{
               flex: 1,
-              minWidth: 45,
+              minWidth: 55,
               padding: '4px 6px',
               borderRadius: 3,
               fontSize: 9,
               fontFamily: 'inherit',
               cursor: 'pointer',
-              border: testMode === 'idle' ? '1px solid #94a3b8' : '1px solid rgba(255,255,255,0.1)',
-              background: testMode === 'idle' ? 'rgba(148, 163, 184, 0.25)' : 'rgba(255,255,255,0.04)',
-              color: testMode === 'idle' ? '#94a3b8' : '#aaa',
+              border: testMode === 'idle' ? '1px solid #38bdf8' : '1px solid rgba(255,255,255,0.1)',
+              background: testMode === 'idle' ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255,255,255,0.04)',
+              color: testMode === 'idle' ? '#38bdf8' : '#aaa',
               fontWeight: 700
             }}
           >
-            [4] Idle
+            P0: Idle
+          </button>
+          <button
+            onClick={() => onSetTestMode('palm_sweep')}
+            style={{
+              flex: 1,
+              minWidth: 70,
+              padding: '4px 6px',
+              borderRadius: 3,
+              fontSize: 9,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              border: testMode === 'palm_sweep' ? '1px solid #a3e635' : '1px solid rgba(255,255,255,0.1)',
+              background: testMode === 'palm_sweep' ? 'rgba(163, 230, 53, 0.25)' : 'rgba(255,255,255,0.04)',
+              color: testMode === 'palm_sweep' ? '#a3e635' : '#aaa',
+              fontWeight: 700
+            }}
+          >
+            P1: Palm Sweep
+          </button>
+          <button
+            onClick={() => onSetTestMode('silhouette')}
+            style={{
+              flex: 1,
+              minWidth: 70,
+              padding: '4px 6px',
+              borderRadius: 3,
+              fontSize: 9,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              border: testMode === 'silhouette' ? '1px solid #3b82f6' : '1px solid rgba(255,255,255,0.1)',
+              background: testMode === 'silhouette' ? 'rgba(59, 130, 246, 0.25)' : 'rgba(255,255,255,0.04)',
+              color: testMode === 'silhouette' ? '#3b82f6' : '#aaa',
+              fontWeight: 700
+            }}
+          >
+            P2: Silhouette
+          </button>
+          <button
+            onClick={() => onSetTestMode('fist_release')}
+            style={{
+              flex: 1,
+              minWidth: 70,
+              padding: '4px 6px',
+              borderRadius: 3,
+              fontSize: 9,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              border: testMode === 'fist_release' ? '1px solid #f43f5e' : '1px solid rgba(255,255,255,0.1)',
+              background: testMode === 'fist_release' ? 'rgba(244, 63, 94, 0.25)' : 'rgba(255,255,255,0.04)',
+              color: testMode === 'fist_release' ? '#f43f5e' : '#aaa',
+              fontWeight: 700
+            }}
+          >
+            P3: Fist Release
           </button>
         </div>
 
@@ -389,7 +415,7 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
       </div>
 
       <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 6, fontSize: 8.5, color: '#666', textAlign: 'center' }}>
-        Ctrl+Shift+H to close • Ctrl+Shift+D for Profiler • R to clear residue • F fullscreen kiosk
+        Ctrl+Shift+H: close • Ctrl+Shift+D: Profiler • R: clear residue • F: kiosk fullscreen
       </div>
     </div>
   );

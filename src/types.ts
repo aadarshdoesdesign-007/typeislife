@@ -3,7 +3,7 @@ export type FontAxisState = {
   wdth: number; // 70 - 125
 };
 
-export type DominantContributor = 'interaction' | 'residue' | 'idle' | 'none';
+export type DominantContributor = 'interaction' | 'silhouette' | 'residue' | 'idle' | 'none';
 
 export type CharacterItem = {
   char: string;
@@ -22,11 +22,23 @@ export type CharacterItem = {
   word: string;
   wordResponsiveness: number;
   wordInertia: number;
+  isHeavyWord?: boolean;
+  isLightWord?: boolean;
   // Physical residue memory
   residue: number; // 0..1
   dominantContributor?: DominantContributor;
   lastDrawnWght: number;
   lastDrawnWdth: number;
+  // Phase 1 Gravity & Offset physics (draw position only, no reflow)
+  offsetX: number;
+  targetOffsetX: number;
+  velocityX: number;
+  offsetY: number;
+  targetOffsetY: number;
+  velocityY: number;
+  // Phase 3 Drop gesture state
+  dropOffset: number;
+  dropVelocity: number;
 };
 
 export type PoseLandmark = {
@@ -36,7 +48,7 @@ export type PoseLandmark = {
   visibility?: number;
 };
 
-export type InfluencePointType = 'palm' | 'fist' | 'nose' | 'shoulders' | 'wrist';
+export type InfluencePointType = 'palm' | 'fist' | 'nose' | 'shoulders' | 'wrist' | 'silhouette';
 
 export type InfluencePoint = {
   id: string;
@@ -59,6 +71,7 @@ export type TrackedHand = {
   isOpen: boolean;
   rawIsFist: boolean;
   gestureChangedAt: number;
+  fistHeldDurationMs: number; // Timestamp or ms fist has been held
   speed: number;
   velocityX: number;
   velocityY: number;
@@ -94,20 +107,30 @@ export type InstallationConfig = {
 };
 
 export interface MechanicsSwitches {
-  gestures: boolean;        // 1. Physical Gestures (Open Palm, Fist, 2-Hand Stretch)
-  speedRipple: boolean;     // 2. Hand Speed Ripple
-  headTracking: boolean;    // 3. Head / Visitor Influence
-  semanticMass: boolean;    // 4. Semantic Mass Dictionary
-  residue: boolean;         // 5. Typographic Residue Memory
-  attractMode: boolean;     // 6. Attract Mode Wave
-  sound: boolean;           // 7. Architectural Drone & Settle Audio
-  hands: boolean;           // 8. Hand Tracking Active
+  // Phase 0: Contrast Guard
+  contrastGuard: boolean;
+  // Phase 1: Gravity & Drift
+  gravity: boolean;
+  // Phase 2: Body Silhouette Segmentation
+  bodySilhouette: boolean;
+  // Phase 3: Drop Gesture
+  dropGesture: boolean;
+  // Core Baseline Mechanics
+  gestures: boolean;
+  speedRipple: boolean;
+  headTracking: boolean;
+  semanticMass: boolean;
+  residue: boolean;
+  attractMode: boolean;
+  sound: boolean;
+  hands: boolean;
 }
 
 export interface WallVisualizations {
-  sourceTint: boolean;      // Tint glyphs by interaction source
-  residueHeatmap: boolean;  // Purple ghost imprints of past presence
-  influenceDots: boolean;   // Heads-up circles and projected tracking dots
+  sourceTint: boolean;       // Tint glyphs by interaction source
+  residueHeatmap: boolean;   // Purple ghost imprints of past presence
+  influenceDots: boolean;    // Heads-up circles and projected tracking dots
+  maskOutline: boolean;      // Phase 2 Body silhouette mask outline
 }
 
 export interface MechanicsLiveTelemetry {
@@ -119,4 +142,7 @@ export interface MechanicsLiveTelemetry {
   idleStatus: string;
   meanWeight: number;
   droneActive: boolean;
+  silhouetteFps: number;
+  silhouetteCoverage: number;
+  lastDropInfo: string;
 }

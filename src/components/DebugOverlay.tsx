@@ -17,12 +17,13 @@ interface DebugOverlayProps {
   avgAxes: FontAxisState;
   trackedPeople: TrackedPerson[];
   trackedHands: TrackedHand[];
+  silhouetteMask?: Uint8Array | null;
   cameraStatus: CameraStatus;
   videoElement: HTMLVideoElement | null;
-  testMode?: 'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle';
+  testMode?: string;
   testCountdown?: number;
   isFullscreen?: boolean;
-  onSetTestMode?: (mode: 'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle') => void;
+  onSetTestMode?: (mode: any) => void;
   showInfluencePoints: boolean;
   onToggleShowInfluencePoints: () => void;
   showResidueHeatmap: boolean;
@@ -60,6 +61,7 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
   avgAxes,
   trackedPeople,
   trackedHands,
+  silhouetteMask,
   cameraStatus,
   videoElement,
   testMode = 'live',
@@ -110,6 +112,22 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
           ctx.font = '9px monospace';
           ctx.textAlign = 'center';
           ctx.fillText(`Camera: ${cameraStatus.toUpperCase()}`, width / 2, height / 2);
+        }
+
+        // Draw Phase 2 Silhouette Mask on Preview if available
+        if (silhouetteMask) {
+          ctx.save();
+          ctx.fillStyle = 'rgba(59, 130, 246, 0.35)';
+          const sx = width / 128;
+          const sy = height / 72;
+          for (let my = 0; my < 72; my += 2) {
+            for (let mx = 0; mx < 128; mx += 2) {
+              if (silhouetteMask[my * 128 + mx] > 128) {
+                ctx.fillRect(mx * sx, my * sy, sx * 2, sy * 2);
+              }
+            }
+          }
+          ctx.restore();
         }
 
         // Draw Pose Skeletons (tracked visitors)
@@ -184,7 +202,7 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
 
     animId = requestAnimationFrame(drawPreview);
     return () => cancelAnimationFrame(animId);
-  }, [isVisible, trackedPeople, trackedHands, videoElement, cameraStatus, testMode, testCountdown]);
+  }, [isVisible, trackedPeople, trackedHands, silhouetteMask, videoElement, cameraStatus, testMode, testCountdown]);
 
   if (!isVisible) return null;
 
@@ -260,7 +278,7 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
         </div>
       </div>
 
-      {/* SIMULATED MODE BANNER (Auto-reverts to Live after 10s) */}
+      {/* SIMULATED MODE BANNER */}
       {testMode !== 'live' && (
         <div
           style={{
@@ -325,7 +343,7 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
           <span style={{ color: '#aaa' }}>Residue Memory:</span>
-          <span>45s half-life (cap 500w)</span>
+          <span>30s half-life (cap +150w)</span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
           <span style={{ color: '#aaa' }}>Gesture State:</span>
@@ -394,7 +412,7 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
         </div>
       </div>
 
-      {/* Mirrored Camera Preview */}
+      {/* Mirrored Camera Preview with Phase 2 Silhouette Overlay */}
       <div style={{ marginBottom: 8 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2, fontSize: 8.5, color: '#888' }}>
           <span>CAMERA PREVIEW (15FPS)</span>
@@ -423,7 +441,7 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
         </div>
       </div>
 
-      {/* Concept Verification Test Buttons */}
+      {/* Verification Simulation Buttons */}
       <div style={{ marginBottom: 8 }}>
         {isFullscreen ? (
           <div
@@ -459,52 +477,52 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
               [0] Live
             </button>
             <button
-              onClick={() => onSetTestMode?.('fist')}
+              onClick={() => onSetTestMode?.('palm_sweep')}
               style={{
                 flex: 1.2,
-                minWidth: 60,
+                minWidth: 55,
                 padding: '3px 2px',
                 fontSize: 8.5,
                 borderRadius: 3,
-                background: testMode === 'fist' ? 'rgba(244, 63, 94, 0.25)' : 'rgba(255, 255, 255, 0.05)',
-                color: testMode === 'fist' ? '#f43f5e' : '#888',
-                border: `1px solid ${testMode === 'fist' ? 'rgba(244, 63, 94, 0.5)' : 'rgba(255, 255, 255, 0.1)'}`,
+                background: testMode === 'palm_sweep' ? 'rgba(163, 230, 53, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                color: testMode === 'palm_sweep' ? '#a3e635' : '#888',
+                border: `1px solid ${testMode === 'palm_sweep' ? 'rgba(163, 230, 53, 0.5)' : 'rgba(255, 255, 255, 0.1)'}`,
                 cursor: 'pointer'
               }}
             >
-              [1] Fist
+              [1] Palm
             </button>
             <button
-              onClick={() => onSetTestMode?.('two_hands')}
+              onClick={() => onSetTestMode?.('silhouette')}
               style={{
-                flex: 1.4,
-                minWidth: 80,
+                flex: 1.3,
+                minWidth: 65,
                 padding: '3px 2px',
                 fontSize: 8.5,
                 borderRadius: 3,
-                background: testMode === 'two_hands' ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255, 255, 255, 0.05)',
-                color: testMode === 'two_hands' ? '#38bdf8' : '#888',
-                border: `1px solid ${testMode === 'two_hands' ? 'rgba(56, 189, 248, 0.5)' : 'rgba(255, 255, 255, 0.1)'}`,
+                background: testMode === 'silhouette' ? 'rgba(59, 130, 246, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                color: testMode === 'silhouette' ? '#3b82f6' : '#888',
+                border: `1px solid ${testMode === 'silhouette' ? 'rgba(59, 130, 246, 0.5)' : 'rgba(255, 255, 255, 0.1)'}`,
                 cursor: 'pointer'
               }}
             >
-              [2] 2-Hand Stretch
+              [2] Silhouette
             </button>
             <button
-              onClick={() => onSetTestMode?.('wave_residue')}
+              onClick={() => onSetTestMode?.('fist_release')}
               style={{
-                flex: 1.4,
-                minWidth: 80,
+                flex: 1.3,
+                minWidth: 65,
                 padding: '3px 2px',
                 fontSize: 8.5,
                 borderRadius: 3,
-                background: testMode === 'wave_residue' ? 'rgba(168, 85, 247, 0.25)' : 'rgba(255, 255, 255, 0.05)',
-                color: testMode === 'wave_residue' ? '#c084fc' : '#888',
-                border: `1px solid ${testMode === 'wave_residue' ? 'rgba(168, 85, 247, 0.5)' : 'rgba(255, 255, 255, 0.1)'}`,
+                background: testMode === 'fist_release' ? 'rgba(244, 63, 94, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                color: testMode === 'fist_release' ? '#f43f5e' : '#888',
+                border: `1px solid ${testMode === 'fist_release' ? 'rgba(244, 63, 94, 0.5)' : 'rgba(255, 255, 255, 0.1)'}`,
                 cursor: 'pointer'
               }}
             >
-              [3] Wave Residue
+              [3] Drop
             </button>
             <button
               onClick={() => onSetTestMode?.('idle')}
@@ -526,40 +544,27 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
         )}
       </div>
 
-      {/* Typography Mass Telemetry */}
-      <div style={{ borderTop: '1px solid rgba(255, 255, 255, 0.08)', paddingTop: 6, marginBottom: 6 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-          <span style={{ color: '#aaa' }}>Base Axis:</span>
+      {/* Status rows at bottom */}
+      <div style={{ borderTop: '1px solid rgba(255, 255, 255, 0.08)', paddingTop: 6, fontSize: 9 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', color: '#aaa', marginBottom: 2 }}>
+          <span>Base Axis:</span>
           <span>{currentAxes.wght}w / {currentAxes.wdth}%</span>
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ color: '#aaa' }}>Canvas Mean Weight:</span>
-          <span style={{ color: avgAxes.wght > 300 ? '#4ade80' : '#f4f3ee', fontWeight: 700 }}>
-            {avgAxes.wght}
-          </span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', color: '#aaa', marginBottom: 2 }}>
+          <span>Canvas Mean Weight:</span>
+          <span style={{ color: avgAxes.wght <= 260 ? '#4ade80' : '#fbbf24', fontWeight: 600 }}>{avgAxes.wght}</span>
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ color: '#aaa' }}>Web Audio:</span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', color: '#aaa', marginBottom: 4 }}>
+          <span>Web Audio:</span>
           <span style={{ color: isMuted ? '#ef4444' : '#4ade80', fontWeight: 600 }}>
-            {isMuted ? 'MUTED [M]' : avgAxes.wght > 230 ? 'DRONE ACTIVE' : 'SILENT (IDLE)'}
+            {isMuted ? 'MUTED' : 'DRONE ACTIVE'}
           </span>
         </div>
-      </div>
-
-      {/* Footer */}
-      <div
-        style={{
-          borderTop: '1px solid rgba(255, 255, 255, 0.08)',
-          paddingTop: 4,
-          fontSize: 8.5,
-          color: '#666',
-          display: 'flex',
-          justifyContent: 'space-between'
-        }}
-      >
-        <span>[D] Debug</span>
-        <span>[F] Fullscreen</span>
-        <span>[M] Mute</span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', color: '#666', fontSize: 8.5, marginTop: 4 }}>
+          <span>[D] Debug</span>
+          <span>[F] Fullscreen</span>
+          <span>[M] Mute</span>
+        </div>
       </div>
     </div>
   );

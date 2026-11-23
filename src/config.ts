@@ -1,36 +1,39 @@
 /**
  * =========================================================================
  * "WORDS HAVE WEIGHT" — INSTALLATION TUNING CONFIGURATION
- * Master exhibition tuning: semantic mass, residue, gestures, attract mode.
+ * Master exhibition tuning: semantic mass, residue, gestures, attract mode,
+ * Phase 0 Contrast Guard, Phase 1 Gravity, Phase 2 Silhouette, Phase 3 Drop.
  * =========================================================================
  */
 
 export interface SemanticWordConfig {
   responsiveness: number; // Multiplier on target weight response
   inertia: number;        // Multiplier on letter mass (higher = settles slower)
+  isHeavy?: boolean;
+  isLight?: boolean;
 }
 
 // 1. SEMANTIC MASS TABLE (Editable per-word dictionary)
 export const SEMANTIC_MASS_TABLE: Record<string, SemanticWordConfig> = {
-  // Heavy monumental words: high responsiveness & monumental sluggish settling
-  MASS: { responsiveness: 1.3, inertia: 2.4 },
-  WEIGHT: { responsiveness: 1.3, inertia: 2.5 },
-  MONUMENTAL: { responsiveness: 1.3, inertia: 2.8 },
-  BURDEN: { responsiveness: 1.3, inertia: 2.6 },
-  GRAVITATIONAL: { responsiveness: 1.3, inertia: 2.5 },
-  ARCHITECTURE: { responsiveness: 1.3, inertia: 2.4 },
-  BODIES: { responsiveness: 1.3, inertia: 2.2 },
-  RESIDUE: { responsiveness: 1.3, inertia: 2.3 },
+  // Heavy monumental words: sag up to 8px below baseline, high responsiveness & sluggish settling
+  MASS: { responsiveness: 1.3, inertia: 2.4, isHeavy: true },
+  WEIGHT: { responsiveness: 1.3, inertia: 2.5, isHeavy: true },
+  MONUMENTAL: { responsiveness: 1.3, inertia: 2.8, isHeavy: true },
+  BURDEN: { responsiveness: 1.3, inertia: 2.6, isHeavy: true },
+  GRAVITATIONAL: { responsiveness: 1.3, inertia: 2.5, isHeavy: true },
+  ARCHITECTURE: { responsiveness: 1.3, inertia: 2.4, isHeavy: true },
+  BODIES: { responsiveness: 1.3, inertia: 2.2, isHeavy: true },
+  RESIDUE: { responsiveness: 1.3, inertia: 2.3, isHeavy: true },
 
-  // Light ethereal words: low responsiveness & fast snap-back
-  AIRY: { responsiveness: 0.4, inertia: 0.45 },
-  FRAGILITY: { responsiveness: 0.4, inertia: 0.40 },
-  SILENCE: { responsiveness: 0.4, inertia: 0.50 },
-  FLEETING: { responsiveness: 0.4, inertia: 0.45 },
-  TRANSPARENT: { responsiveness: 0.4, inertia: 0.40 },
-  RECEDING: { responsiveness: 0.4, inertia: 0.50 },
-  RELEASES: { responsiveness: 0.4, inertia: 0.45 },
-  UNSAID: { responsiveness: 0.4, inertia: 0.40 },
+  // Light ethereal words: lift up to 6px & drift 2-3px, low responsiveness & fast snap-back
+  AIRY: { responsiveness: 0.4, inertia: 0.45, isLight: true },
+  FRAGILITY: { responsiveness: 0.4, inertia: 0.40, isLight: true },
+  SILENCE: { responsiveness: 0.4, inertia: 0.50, isLight: true },
+  FLEETING: { responsiveness: 0.4, inertia: 0.45, isLight: true },
+  TRANSPARENT: { responsiveness: 0.4, inertia: 0.40, isLight: true },
+  RECEDING: { responsiveness: 0.4, inertia: 0.50, isLight: true },
+  RELEASES: { responsiveness: 0.4, inertia: 0.45, isLight: true },
+  UNSAID: { responsiveness: 0.4, inertia: 0.40, isLight: true },
 };
 
 export const DEFAULT_SEMANTIC_CONFIG: SemanticWordConfig = {
@@ -45,10 +48,35 @@ export const INSTALLATION_CONFIG = {
   baseWdth: 70,        // Raised width floor for natural resting typography
   maxWdth: 125,        // Capped maximum reachable width envelope
 
-  // --- Residue Memory ---
-  residueHalfLifeSeconds: 45, // Time in seconds for residue to halve
+  // --- Phase 0: Contrast Guard & Residue Memory ---
+  residueHalfLifeSeconds: 30,    // Global half-life ~30s
   residueAccumulationRate: 0.25, // How fast residue builds up per second under influence
-  maxResidueWght: 500,        // Cap weight contributed by residue alone
+  maxResidueWghtOffset: 150,     // Cap residue at wght +150 above resting weight (cap at 350w max)
+  maxResidueWght: 500,           // Legacy unconstrained max residue floor
+  targetIdleMean: 230,           // Slow pull of resting mean toward ~230-250
+  idleMeanPullRate: 0.06,        // Gentle decay restoring pull when room is quiet
+
+  // --- Phase 1: Physical Gravity Offsets ---
+  heavyMaxSagPx: 8.0,            // Heavy words sag up to 8px below baseline
+  lightMaxLiftPx: 6.0,           // Light words lift up to 6px above baseline
+  lightMaxDriftPx: 2.8,          // Light words drift sideways 2-3px
+  gravitySpringStiffness: 0.12,  // Spring settle stiffness
+  gravityDampingRatio: 0.75,     // Damping ratio for offset settles
+
+  // --- Phase 2: Body Silhouette Segmentation ---
+  maskWidth: 128,                // Downscaled mask ~128x72
+  maskHeight: 72,
+  silhouetteTargetFps: 18,       // Staggered 15-20 FPS
+  silhouetteCoverageScale: 1.25, // Multiplier for soft-edge mask sampling
+  fpsFallbackThreshold: 40,      // Fallback to head/hands only if FPS drops below 40
+
+  // --- Phase 3: Drop Gesture ---
+  fistHoldTriggerMs: 300,        // Fist held for 300ms before release
+  minDropDistPx: 12,             // Light/medium letters drop 12px
+  maxDropDistPx: 20,             // Heavy letters drop 20px
+  dropCooldownMs: 1500,          // Rate-limited to one drop per hand every 1.5s
+  dropRadiusPx: 450,             // Letters within hand's radius
+  dropRecoveryDurationSec: 1.2,  // Spring back over ~1.2s
 
   // --- Gestural Fields ---
   openPalmRadius: 650,        // Wide, moderate influence
@@ -75,7 +103,7 @@ export const INSTALLATION_CONFIG = {
   // --- Transition & Cross-fading ---
   presenceFadeDurationMs: 800,
   ambientWaveSpeed: 0.65,
-  ambientWaveAmplitude: 26,
+  ambientWaveAmplitude: 24,
 
   // --- Architectural Web Audio ---
   masterVolume: 0.75,
@@ -96,6 +124,7 @@ export const INSTALLATION_CONFIG = {
   interactionTintColor: '#38bdf8',
   residueTintColor: '#c084fc',
   idleTintColor: '#34d399',
+  silhouetteTintColor: '#3b82f6',
 };
 
 export type InstallationConfigType = typeof INSTALLATION_CONFIG;

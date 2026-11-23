@@ -24,6 +24,44 @@ function createDummyLandmarks(x: number, y: number): PoseLandmark[] {
   return lms;
 }
 
+// Generate a realistic synthetic body silhouette mask (128x72) for Phase 2 simulation
+function createSimulatedSilhouetteMask(centerXNorm: number = 0.5): Uint8Array {
+  const mask = new Uint8Array(128 * 72);
+  const cx = Math.floor(centerXNorm * 128);
+  for (let y = 0; y < 72; y++) {
+    let halfWidth = 0;
+    // Head (y = 8 to 20)
+    if (y >= 8 && y <= 20) {
+      const r = 6;
+      const dy = y - 14;
+      if (dy * dy <= r * r) {
+        halfWidth = Math.sqrt(r * r - dy * dy);
+      }
+    }
+    // Neck & Shoulders (y = 21 to 32)
+    else if (y > 20 && y <= 32) {
+      halfWidth = 4 + (y - 20) * 1.5; // expands to ~22px
+    }
+    // Torso (y = 33 to 55)
+    else if (y > 32 && y <= 55) {
+      halfWidth = 20 - (y - 33) * 0.25; // ~15-20px
+    }
+    // Legs (y = 56 to 71)
+    else if (y > 55) {
+      halfWidth = 14;
+    }
+
+    if (halfWidth > 0) {
+      const minX = Math.max(0, Math.floor(cx - halfWidth));
+      const maxX = Math.min(127, Math.ceil(cx + halfWidth));
+      for (let x = minX; x <= maxX; x++) {
+        mask[y * 128 + x] = 255;
+      }
+    }
+  }
+  return mask;
+}
+
 export function App() {
   const [fps, setFps] = useState<number>(60);
   const [avgAxes, setAvgAxes] = useState<FontAxisState>({
@@ -46,6 +84,10 @@ export function App() {
 
   // Mechanics isolation switches
   const [mechanicsSwitches, setMechanicsSwitches] = useState<MechanicsSwitches>({
+    contrastGuard: true,
+    gravity: true,
+    bodySilhouette: true,
+    dropGesture: true,
     gestures: true,
     speedRipple: true,
     headTracking: true,
@@ -56,11 +98,12 @@ export function App() {
     hands: true
   });
 
-  // Wall visualizations (active only while panel open)
+  // Wall visualizations
   const [wallVisualizations, setWallVisualizations] = useState<WallVisualizations>({
     sourceTint: false,
     residueHeatmap: false,
-    influenceDots: false
+    influenceDots: false,
+    maskOutline: false
   });
 
   // Live telemetry for Mechanics panel
@@ -72,12 +115,14 @@ export function App() {
     meanResidue: 0,
     idleStatus: 'Idle (0s)',
     meanWeight: 200,
-    droneActive: false
+    droneActive: false,
+    silhouetteFps: 18,
+    silhouetteCoverage: 0,
+    lastDropInfo: 'None'
   });
 
-  // Concept test modes: 'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle'
-  // Always starts in 'live' mode on page load and reload. Never persists test mode.
-  const [testMode, setTestMode] = useState<'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle'>('live');
+  // Concept test modes
+  const [testMode, setTestMode] = useState<string>('live');
   const [testCountdown, setTestCountdown] = useState<number>(0);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(
     typeof document !== 'undefined' ? Boolean(document.fullscreenElement) : false
@@ -101,7 +146,7 @@ export function App() {
     return () => clearInterval(watchdogInterval);
   }, []);
 
-  // Screen Wake Lock API (prevents installation screen sleep)
+  // Screen Wake Lock API
   useEffect(() => {
     let wakeLockSentinel: any = null;
     async function requestWakeLock() {
@@ -154,7 +199,7 @@ export function App() {
     };
   }, [testMode]);
 
-  // Track fullscreen changes and lock out test mode in kiosk/fullscreen mode
+  // Track fullscreen changes
   useEffect(() => {
     const handleFsChange = () => {
       const isFs = Boolean(document.fullscreenElement);
@@ -170,13 +215,14 @@ export function App() {
     return () => document.removeEventListener('fullscreenchange', handleFsChange);
   }, []);
 
-  // Vision tracking hook (GPU Delegate, Camera error handling & auto-retry)
+  // Vision tracking hook
   const {
     videoRef,
     videoElement,
     cameraStatus,
     latestPeopleRef,
     latestHandsRef,
+    latestMaskRef,
     poseFps,
     detectionMs,
     activeDelegate
@@ -184,8 +230,9 @@ export function App() {
 
   const effectiveTrackedPeopleRef = useRef<TrackedPerson[]>([]);
   const effectiveTrackedHandsRef = useRef<TrackedHand[]>([]);
+  const effectiveMaskRef = useRef<Uint8Array | null>(null);
 
-  const handleSetTestMode = (mode: 'live' | 'fist' | 'two_hands' | 'wave_residue' | 'idle') => {
+  const handleSetTestMode = (mode: string) => {
     if (isFullscreen && mode !== 'live') return;
     setTestMode(mode);
   };
@@ -204,14 +251,110 @@ export function App() {
 
   useEffect(() => {
     let animId: number;
+    let simFistStartTime = 0;
+    let dropFired = false;
+
     const syncRef = () => {
       lastWatchdogBeatRef.current = Date.now();
       const now = performance.now();
+
       if (testMode === 'idle') {
+        // Phase 0: Idle Room
         effectiveTrackedPeopleRef.current = [];
         effectiveTrackedHandsRef.current = [];
+        effectiveMaskRef.current = null;
+      } else if (testMode === 'palm_sweep') {
+        // Phase 1: Open Palm Sweep across text (demonstrating heavy sag & light lift/drift)
+        const sweepX = 0.5 + Math.sin(now * 0.0018) * 0.32;
+        effectiveTrackedHandsRef.current = [{
+          id: 1,
+          palmX: sweepX,
+          palmY: 0.45,
+          handSpan: 0.22,
+          depth: 0.95,
+          isFist: false,
+          isOpen: true,
+          rawIsFist: false,
+          gestureChangedAt: now,
+          fistHeldDurationMs: 0,
+          speed: 0.25,
+          velocityX: 0.2,
+          velocityY: 0,
+          landmarks: createDummyLandmarks(sweepX, 0.45),
+          active: true,
+          lastSeen: now
+        }];
+        effectiveTrackedPeopleRef.current = [{
+          id: 1,
+          nosePos: { x: sweepX, y: 0.30, visible: true },
+          shoulderWidth: 0.22,
+          depth: 0.75,
+          influencePoints: [],
+          landmarks: [],
+          active: true,
+          lastSeen: now
+        }];
+        effectiveMaskRef.current = null;
+      } else if (testMode === 'silhouette') {
+        // Phase 2: One person standing with body silhouette mask coverage
+        effectiveTrackedPeopleRef.current = [{
+          id: 1,
+          nosePos: { x: 0.48, y: 0.24, visible: true },
+          shoulderWidth: 0.24,
+          depth: 0.85,
+          influencePoints: [],
+          landmarks: [],
+          active: true,
+          lastSeen: now
+        }];
+        effectiveTrackedHandsRef.current = [];
+        effectiveMaskRef.current = createSimulatedSilhouetteMask(0.48);
+      } else if (testMode === 'fist_release') {
+        // Phase 3: Fist held for > 300ms, then released to open palm (triggers drop)
+        const cycle = (now % 3000); // 3-second cycle
+        const isFistPhase = cycle < 1200; // Hold fist for 1.2s, then release to open palm
+
+        if (isFistPhase) {
+          dropFired = false;
+          if (simFistStartTime === 0) simFistStartTime = now;
+        } else {
+          if (!dropFired && (now - simFistStartTime >= 300)) {
+            dropFired = true;
+            canvasRef.current?.triggerSimulatedDrop(window.innerWidth * 0.42, window.innerHeight * 0.45);
+          }
+          simFistStartTime = 0;
+        }
+
+        effectiveTrackedPeopleRef.current = [{
+          id: 1,
+          nosePos: { x: 0.42, y: 0.30, visible: true },
+          shoulderWidth: 0.22,
+          depth: 0.8,
+          influencePoints: [],
+          landmarks: [],
+          active: true,
+          lastSeen: now
+        }];
+        effectiveTrackedHandsRef.current = [{
+          id: 1,
+          palmX: 0.42,
+          palmY: 0.45,
+          handSpan: 0.22,
+          depth: 0.95,
+          isFist: isFistPhase,
+          isOpen: !isFistPhase,
+          rawIsFist: isFistPhase,
+          gestureChangedAt: now,
+          fistHeldDurationMs: isFistPhase ? (now - simFistStartTime) : 0,
+          speed: 0.05,
+          velocityX: 0,
+          velocityY: 0,
+          landmarks: createDummyLandmarks(0.42, 0.45),
+          active: true,
+          lastSeen: now
+        }];
+        effectiveMaskRef.current = null;
       } else if (testMode === 'fist') {
-        // Fist gesture: small concentrated radius, peak wght 900
         effectiveTrackedPeopleRef.current = [{
           id: 1,
           nosePos: { x: 0.5, y: 0.35, visible: true },
@@ -232,6 +375,7 @@ export function App() {
           isOpen: false,
           rawIsFist: true,
           gestureChangedAt: now,
+          fistHeldDurationMs: 800,
           speed: 0.02,
           velocityX: 0,
           velocityY: 0,
@@ -239,8 +383,8 @@ export function App() {
           active: true,
           lastSeen: now
         }];
+        effectiveMaskRef.current = null;
       } else if (testMode === 'two_hands') {
-        // Two hands moving apart: stretches width axis between them
         effectiveTrackedPeopleRef.current = [{
           id: 1,
           nosePos: { x: 0.5, y: 0.35, visible: true },
@@ -262,6 +406,7 @@ export function App() {
             isOpen: true,
             rawIsFist: false,
             gestureChangedAt: now,
+            fistHeldDurationMs: 0,
             speed: 0.02,
             velocityX: 0,
             velocityY: 0,
@@ -279,6 +424,7 @@ export function App() {
             isOpen: true,
             rawIsFist: false,
             gestureChangedAt: now,
+            fistHeldDurationMs: 0,
             speed: 0.02,
             velocityX: 0,
             velocityY: 0,
@@ -287,8 +433,8 @@ export function App() {
             lastSeen: now
           }
         ];
+        effectiveMaskRef.current = null;
       } else if (testMode === 'wave_residue') {
-        // Simulates hand waving across and moving away, leaving residue
         const waveX = 0.5 + Math.sin(now * 0.002) * 0.35;
         effectiveTrackedHandsRef.current = [{
           id: 1,
@@ -300,6 +446,7 @@ export function App() {
           isOpen: true,
           rawIsFist: false,
           gestureChangedAt: now,
+          fistHeldDurationMs: 0,
           speed: 0.4,
           velocityX: 0.3,
           velocityY: 0,
@@ -317,26 +464,23 @@ export function App() {
           active: true,
           lastSeen: now
         }];
+        effectiveMaskRef.current = null;
       } else {
         effectiveTrackedPeopleRef.current = latestPeopleRef.current;
         effectiveTrackedHandsRef.current = latestHandsRef.current;
+        effectiveMaskRef.current = latestMaskRef.current;
       }
       animId = requestAnimationFrame(syncRef);
     };
     animId = requestAnimationFrame(syncRef);
     return () => cancelAnimationFrame(animId);
-  }, [testMode, latestPeopleRef, latestHandsRef]);
+  }, [testMode, latestPeopleRef, latestHandsRef, latestMaskRef]);
 
   useEffect(() => {
     setTimings((prev) => ({ ...prev, detectionMs }));
   }, [detectionMs]);
 
-  // Global key bindings:
-  // - Ctrl+Shift+D or D: Toggle Debug Overlay
-  // - Ctrl+Shift+H: Toggle Mechanics Isolation Panel
-  // - R: Clear residue memory
-  // - F: Toggle fullscreen
-  // - M: Toggle mute
+  // Global key bindings
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
@@ -401,6 +545,8 @@ export function App() {
         ref={canvasRef}
         trackedPeopleRef={effectiveTrackedPeopleRef}
         trackedHandsRef={effectiveTrackedHandsRef}
+        silhouetteMaskRef={effectiveMaskRef}
+        fps={fps}
         isDebugActive={isDebugOpen}
         showInfluencePoints={showInfluencePoints}
         showResidueHeatmap={showResidueHeatmap}
@@ -427,6 +573,7 @@ export function App() {
         avgAxes={avgAxes}
         trackedPeople={effectiveTrackedPeopleRef.current}
         trackedHands={effectiveTrackedHandsRef.current}
+        silhouetteMask={effectiveMaskRef.current}
         cameraStatus={cameraStatus}
         videoElement={videoElement}
         testMode={testMode}
@@ -461,4 +608,3 @@ export function App() {
 }
 
 export default App;
-

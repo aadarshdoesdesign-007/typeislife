@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { FilesetResolver, PoseLandmarker, HandLandmarker } from '@mediapipe/tasks-vision';
+import { FilesetResolver, PoseLandmarker, HandLandmarker, ImageSegmenter } from '@mediapipe/tasks-vision';
 import type { TrackedPerson, TrackedHand, CameraStatus, PoseLandmark } from '../types';
 import { Point3DOneEuroFilter } from '../utils/oneEuroFilter';
 
@@ -9,9 +9,11 @@ export interface VisionTrackingState {
   cameraStatus: CameraStatus;
   latestPeopleRef: React.MutableRefObject<TrackedPerson[]>;
   latestHandsRef: React.MutableRefObject<TrackedHand[]>;
+  latestMaskRef: React.MutableRefObject<Uint8Array | null>;
   poseFps: number;
   detectionMs: number;
   activeDelegate: string;
+  isSegmenterActive: boolean;
   retryCamera: () => void;
 }
 
@@ -20,17 +22,20 @@ export function useVisionTracking(): VisionTrackingState {
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
   const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
   const handLandmarkerRef = useRef<HandLandmarker | null>(null);
+  const imageSegmenterRef = useRef<ImageSegmenter | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const isDetectingRef = useRef<boolean>(false);
   const retryIntervalRef = useRef<number | null>(null);
 
   const latestPeopleRef = useRef<TrackedPerson[]>([]);
   const latestHandsRef = useRef<TrackedHand[]>([]);
+  const latestMaskRef = useRef<Uint8Array | null>(null);
 
   const [cameraStatus, setCameraStatus] = useState<CameraStatus>('initializing');
   const [poseFps, setPoseFps] = useState<number>(0);
   const [detectionMs, setDetectionMs] = useState<number>(0);
   const [activeDelegate, setActiveDelegate] = useState<string>('Initializing...');
+  const [isSegmenterActive, setIsSegmenterActive] = useState<boolean>(false);
 
   const handFiltersRef = useRef<Point3DOneEuroFilter[]>([
     new Point3DOneEuroFilter(1.4, 0.01),
@@ -53,6 +58,8 @@ export function useVisionTracking(): VisionTrackingState {
     { x: 0.5, y: 0.5, time: 0 }
   ]);
 
+  const fistStartTimeRef = useRef<number[]>([0, 0, 0, 0]);
+
   // Persistent gesture debouncing memory per hand slot
   const handGestureDebounceRef = useRef<{ isFist: boolean; candidateFist: boolean; changedAt: number }[]>([
     { isFist: false, candidateFist: false, changedAt: 0 },
@@ -63,6 +70,7 @@ export function useVisionTracking(): VisionTrackingState {
 
   const lastVideoTimeRef = useRef<number>(-1);
   const lastDetectionTimeRef = useRef<number>(0);
+  const lastSegTimeRef = useRef<number>(0);
   const cvFrameCountRef = useRef<number>(0);
   const lastFpsCalcRef = useRef<number>(performance.now());
   const stepCounterRef = useRef<number>(0);
@@ -82,6 +90,7 @@ export function useVisionTracking(): VisionTrackingState {
 
       const poseModelPath = `${window.location.origin}/models/pose_landmarker_lite.task`;
       const handModelPath = `${window.location.origin}/models/hand_landmarker.task`;
+      const segModelPath = `${window.location.origin}/models/selfie_segmenter.tflite`;
 
       let delegateType = 'GPU';
 
@@ -101,6 +110,20 @@ export function useVisionTracking(): VisionTrackingState {
           minHandDetectionConfidence: 0.5,
           minTrackingConfidence: 0.5
         });
+
+        // Initialize Phase 2 Image Segmenter on GPU
+        try {
+          imageSegmenterRef.current = await ImageSegmenter.createFromOptions(vision, {
+            baseOptions: { modelAssetPath: segModelPath, delegate: 'GPU' },
+            runningMode: 'VIDEO',
+            outputCategoryMask: true,
+            outputConfidenceMasks: false
+          });
+          setIsSegmenterActive(true);
+        } catch (segErr) {
+          console.warn('[Vision] ImageSegmenter GPU initialization failed; will fall back to head/hands:', segErr);
+          setIsSegmenterActive(false);
+        }
 
         setActiveDelegate('GPU');
       } catch (gpuErr) {
@@ -201,7 +224,7 @@ export function useVisionTracking(): VisionTrackingState {
     }, 2000);
   }, [cameraStatus, startCamera]);
 
-  // Staggered Detection Loop
+  // Staggered Detection Loop: Hands, Pose, Segmenter (decoupled from render RAF)
   useEffect(() => {
     let isActive = true;
     let timerId: number | null = null;
@@ -216,6 +239,7 @@ export function useVisionTracking(): VisionTrackingState {
         const video = videoRef.current;
         const poseLandmarker = poseLandmarkerRef.current;
         const handLandmarker = handLandmarkerRef.current;
+        const imageSegmenter = imageSegmenterRef.current;
 
         if (
           video &&
@@ -232,8 +256,13 @@ export function useVisionTracking(): VisionTrackingState {
             const step = stepCounterRef.current++;
 
             try {
-              // Staggered alternation: Hands on even frames, Pose on odd frames
-              if (step % 2 === 0 && handLandmarker) {
+              // 3-way Staggered Alternation:
+              // Step 0: Hands (up to 30fps)
+              // Step 1: Pose (up to 30fps)
+              // Step 2: Body Silhouette Segmenter (15-20fps)
+              const mod = step % 3;
+
+              if (mod === 0 && handLandmarker) {
                 const handResults = handLandmarker.detectForVideo(video, now);
                 const handsLandmarks = handResults.landmarks;
 
@@ -286,6 +315,18 @@ export function useVisionTracking(): VisionTrackingState {
                     const isFist = deb.isFist;
                     const isOpen = !isFist && avgExtension >= 1.40;
 
+                    // Fist hold duration tracker for Phase 3 Drop Gesture
+                    if (isFist) {
+                      if (fistStartTimeRef.current[hIdx] === 0) {
+                        fistStartTimeRef.current[hIdx] = now;
+                      }
+                    } else {
+                      fistStartTimeRef.current[hIdx] = 0;
+                    }
+                    const fistHeldDurationMs = isFist && fistStartTimeRef.current[hIdx] > 0
+                      ? now - fistStartTimeRef.current[hIdx]
+                      : 0;
+
                     // Speed calculation
                     const prev = prevHandsPosRef.current[hIdx];
                     const dtSec = Math.max(0.01, (now - prev.time) / 1000);
@@ -309,6 +350,7 @@ export function useVisionTracking(): VisionTrackingState {
                       isOpen,
                       rawIsFist,
                       gestureChangedAt: deb.changedAt,
+                      fistHeldDurationMs,
                       speed,
                       velocityX: vx,
                       velocityY: vy,
@@ -321,8 +363,9 @@ export function useVisionTracking(): VisionTrackingState {
                   latestHandsRef.current = detectedHands;
                 } else {
                   latestHandsRef.current = [];
+                  fistStartTimeRef.current = [0, 0, 0, 0];
                 }
-              } else if (poseLandmarker) {
+              } else if (mod === 1 && poseLandmarker) {
                 const poseResults = poseLandmarker.detectForVideo(video, now);
                 const poses = poseResults.landmarks;
 
@@ -374,6 +417,43 @@ export function useVisionTracking(): VisionTrackingState {
                 } else {
                   latestPeopleRef.current = [];
                 }
+              } else if (mod === 2 && imageSegmenter) {
+                // Phase 2: Body Silhouette Segmentation (15-20fps staggered)
+                if (now - lastSegTimeRef.current >= 50) {
+                  lastSegTimeRef.current = now;
+                  try {
+                    imageSegmenter.segmentForVideo(video, now, (result) => {
+                      if (result && result.categoryMask) {
+                        const mask = result.categoryMask;
+                        const origData = mask.getAsUint8Array();
+                        const mw = mask.width;
+                        const mh = mask.height;
+
+                        // Downscale to 128x72 and mirror horizontally to wall coordinates
+                        const targetW = 128;
+                        const targetH = 72;
+                        const downscaled = new Uint8Array(targetW * targetH);
+                        const stepX = mw / targetW;
+                        const stepY = mh / targetH;
+
+                        for (let dy = 0; dy < targetH; dy++) {
+                          const sy = Math.min(mh - 1, Math.floor(dy * stepY));
+                          for (let dx = 0; dx < targetW; dx++) {
+                            // Mirror X (1 - x): camera right -> wall left
+                            const sx = Math.min(mw - 1, Math.floor((targetW - 1 - dx) * stepX));
+                            const val = origData[sy * mw + sx];
+                            downscaled[dy * targetW + dx] = val > 0 ? 255 : 0;
+                          }
+                        }
+
+                        latestMaskRef.current = downscaled;
+                        mask.close();
+                      }
+                    });
+                  } catch {
+                    // Gracefully ignore segmenter frame if busy
+                  }
+                }
               }
 
               const duration = performance.now() - detectStart;
@@ -423,6 +503,7 @@ export function useVisionTracking(): VisionTrackingState {
       if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
       if (poseLandmarkerRef.current) poseLandmarkerRef.current.close();
       if (handLandmarkerRef.current) handLandmarkerRef.current.close();
+      if (imageSegmenterRef.current) imageSegmenterRef.current.close();
     };
   }, [initVision, startCamera]);
 
@@ -432,9 +513,11 @@ export function useVisionTracking(): VisionTrackingState {
     cameraStatus,
     latestPeopleRef,
     latestHandsRef,
+    latestMaskRef,
     poseFps,
     detectionMs,
     activeDelegate,
+    isSegmenterActive,
     retryCamera: startCamera
   };
 }

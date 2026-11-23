@@ -180,6 +180,48 @@ class WeightAudioEngine {
     }
   }
 
+  /**
+   * Phase 3 Drop Gesture: Soft low architectural thud scaled by number of heavy letters dropped
+   */
+  public triggerDropThud(heavyCount: number) {
+    if (!this.ctx || !this.isUnlocked || !this.masterGain || this.isMuted) return;
+
+    try {
+      const now = this.ctx.currentTime;
+      const thudOsc = this.ctx.createOscillator();
+      const thudGain = this.ctx.createGain();
+      const thudFilter = this.ctx.createBiquadFilter();
+
+      // Deep, low pitch (38Hz -> 26Hz) for gravity drop
+      thudOsc.type = 'triangle';
+      thudOsc.frequency.setValueAtTime(38, now);
+      thudOsc.frequency.exponentialRampToValueAtTime(26, now + 0.38);
+
+      thudFilter.type = 'lowpass';
+      thudFilter.frequency.setValueAtTime(80, now);
+
+      const scale = Math.min(1.0, 0.3 + (heavyCount / 12) * 0.7);
+      const peakGain = 0.45 * scale;
+
+      thudGain.gain.setValueAtTime(0.001, now);
+      thudGain.gain.linearRampToValueAtTime(peakGain, now + 0.03);
+      thudGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
+
+      thudOsc.connect(thudFilter);
+      thudFilter.connect(thudGain);
+      thudGain.connect(this.masterGain);
+
+      thudOsc.start(now);
+      thudOsc.stop(now + 0.45);
+
+      setTimeout(() => {
+        thudOsc.disconnect();
+        thudGain.disconnect();
+        thudFilter.disconnect();
+      }, 500);
+    } catch {}
+  }
+
   public toggleMute(): boolean {
     this.isMuted = !this.isMuted;
     if (this.masterGain && this.ctx) {

@@ -16,12 +16,15 @@ import { glyphAtlas } from '../utils/glyphAtlas';
 
 export interface TypographyCanvasRef {
   clearAllResidue: () => void;
+  triggerSimulatedDrop: (x: number, y: number) => void;
 }
 
 interface TypographyCanvasProps {
   manualAxes?: FontAxisState;
   trackedPeopleRef: React.MutableRefObject<TrackedPerson[]>;
   trackedHandsRef: React.MutableRefObject<TrackedHand[]>;
+  silhouetteMaskRef: React.MutableRefObject<Uint8Array | null>;
+  fps?: number;
   isDebugActive?: boolean;
   showInfluencePoints?: boolean;
   showResidueHeatmap?: boolean;
@@ -35,6 +38,10 @@ interface TypographyCanvasProps {
 }
 
 const DEFAULT_MECHANICS_SWITCHES: MechanicsSwitches = {
+  contrastGuard: true,
+  gravity: true,
+  bodySilhouette: true,
+  dropGesture: true,
   gestures: true,
   speedRipple: true,
   headTracking: true,
@@ -48,13 +55,34 @@ const DEFAULT_MECHANICS_SWITCHES: MechanicsSwitches = {
 const DEFAULT_WALL_VISUALIZATIONS: WallVisualizations = {
   sourceTint: false,
   residueHeatmap: false,
-  influenceDots: false
+  influenceDots: false,
+  maskOutline: false
 };
+
+function smoothMax(a: number, b: number, k: number = 0.12): number {
+  if (k <= 0) return Math.max(a, b);
+  const h = Math.max(0, Math.min(1, 0.5 + (a - b) / (2 * k)));
+  return a * h + b * (1 - h) + k * h * (1 - h);
+}
+
+function sampleSilhouetteMask(mask: Uint8Array, normX: number, normY: number): number {
+  const mx = Math.max(1, Math.min(126, Math.floor(normX * 128)));
+  const my = Math.max(1, Math.min(70, Math.floor(normY * 72)));
+  let sum = 0;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      sum += mask[(my + dy) * 128 + (mx + dx)];
+    }
+  }
+  return sum / (9 * 255);
+}
 
 export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvasProps>(({
   manualAxes,
   trackedPeopleRef,
   trackedHandsRef,
+  silhouetteMaskRef,
+  fps = 60,
   isDebugActive = false,
   showInfluencePoints = false,
   showResidueHeatmap = false,
@@ -82,7 +110,45 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
   const idleDurationSecRef = useRef<number>(0);
   const presenceFadeRef = useRef<number>(0.0);
 
-  // Expose imperative methods (e.g. clearAllResidue)
+  // Phase 3 Drop Gesture state tracking per hand
+  const prevHandFistStateRef = useRef<boolean[]>([false, false, false, false]);
+  const handFistStartTimeRef = useRef<number[]>([0, 0, 0, 0]);
+  const lastDropTimeRef = useRef<number>(0);
+  const lastDropInfoRef = useRef<string>('None');
+
+  // Trigger Drop Gesture helper
+  const triggerDropAt = useCallback((x: number, y: number) => {
+    const cfg = INSTALLATION_CONFIG;
+    let heavyCount = 0;
+    const lines = charactersRef.current;
+
+    lines.forEach((lineChars) => {
+      lineChars.forEach((ch) => {
+        if (ch.char === ' ') return;
+        const dist = Math.hypot(ch.x - x, ch.y - y);
+        if (dist < cfg.dropRadiusPx) {
+          const prox = Math.cos((dist / cfg.dropRadiusPx) * (Math.PI / 2));
+          const wNorm = Math.max(0, Math.min(1, (ch.currentWght - cfg.baseWght) / (cfg.maxWght - cfg.baseWght)));
+          // Heavy ones drop further (up to 20px), light ones drop 12px
+          const dropDist = (cfg.minDropDistPx + (cfg.maxDropDistPx - cfg.minDropDistPx) * wNorm) * prox;
+
+          ch.dropOffset = dropDist;
+          ch.dropVelocity = 45 * prox;
+
+          if (ch.currentWght >= 450) {
+            heavyCount++;
+          }
+        }
+      });
+    });
+
+    if (heavyCount > 0 && mechanicsSwitches.sound) {
+      audioEngine.triggerDropThud(heavyCount);
+    }
+    lastDropInfoRef.current = `Dropped (${heavyCount} heavy letters)`;
+  }, [mechanicsSwitches.sound]);
+
+  // Expose imperative methods
   useImperativeHandle(ref, () => ({
     clearAllResidue: () => {
       charactersRef.current.forEach((lineChars) => {
@@ -90,8 +156,11 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
           ch.residue = 0;
         });
       });
+    },
+    triggerSimulatedDrop: (x: number, y: number) => {
+      triggerDropAt(x, y);
     }
-  }), []);
+  }), [triggerDropAt]);
 
   // Ensure Roboto Flex font is loaded
   useEffect(() => {
@@ -122,9 +191,7 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
     const cfg = INSTALLATION_CONFIG;
     const lines = EXHIBITION_TEXT_LINES;
 
-    // Target boundaries:
-    // Width target: maximum 84% of canvas width (leaves >= 8% margin on left and 8% on right)
-    // Height target: maximum 80% of canvas height (leaves >= 10% margin on top and 10% on bottom)
+    // Boundaries: width <= 84% width, height <= 80% height
     const maxLineLen = Math.max(...lines.map((l) => l.length));
 
     let candidateFontSize = Math.floor(
@@ -135,7 +202,6 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
     );
     candidateFontSize = Math.max(16, candidateFontSize);
 
-    // Measure maximum line width with Canvas context at candidateFontSize
     ctx.font = `${cfg.maxWght} ${candidateFontSize}px "Roboto Flex Variable", sans-serif`;
     if ('fontVariationSettings' in ctx) {
       (ctx as any).fontVariationSettings = `'wght' ${cfg.maxWght}, 'wdth' ${cfg.maxWdth}`;
@@ -242,10 +308,22 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
           word: wordKey,
           wordResponsiveness: semanticProps.responsiveness,
           wordInertia: semanticProps.inertia,
+          isHeavyWord: Boolean(semanticProps.isHeavy),
+          isLightWord: Boolean(semanticProps.isLight),
           residue: initialResidue,
           dominantContributor: 'none',
           lastDrawnWght: 0,
-          lastDrawnWdth: 0
+          lastDrawnWdth: 0,
+          // Phase 1 Gravity & Offset physics
+          offsetX: 0,
+          targetOffsetX: 0,
+          velocityX: 0,
+          offsetY: 0,
+          targetOffsetY: 0,
+          velocityY: 0,
+          // Phase 3 Drop physics
+          dropOffset: 0,
+          dropVelocity: 0
         });
 
         currentX += slotW;
@@ -295,10 +373,10 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
 
         frameCountRef.current++;
         if (currentTime - lastFpsTimeRef.current >= 500) {
-          const fps = Math.round(
+          const calculatedFps = Math.round(
             (frameCountRef.current * 1000) / (currentTime - lastFpsTimeRef.current)
           );
-          onFpsUpdate?.(fps);
+          onFpsUpdate?.(calculatedFps);
           frameCountRef.current = 0;
           lastFpsTimeRef.current = currentTime;
         }
@@ -330,7 +408,7 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
         const timeSec = currentTime * 0.001;
         const fontSize = currentFontSizeRef.current;
 
-        // 1. UPDATE PHASE (Spatial Field, Gestures, Semantic Mass & Attract Mode)
+        // 1. UPDATE PHASE (Spatial Field, Gestures, Silhouette, Gravity, Drop)
         const updateStart = performance.now();
 
         const rawPeople = trackedPeopleRef.current;
@@ -338,7 +416,11 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
 
         const trackedPeople = mechanicsSwitches.headTracking ? rawPeople : [];
         const trackedHands = mechanicsSwitches.hands ? rawHands : [];
-        const hasVisitors = trackedPeople.length > 0 || trackedHands.length > 0;
+        const activeMask = (mechanicsSwitches.bodySilhouette && fps >= cfg.fpsFallbackThreshold)
+          ? silhouetteMaskRef.current
+          : null;
+
+        const hasVisitors = trackedPeople.length > 0 || trackedHands.length > 0 || (activeMask !== null);
 
         // Attract mode timing
         if (hasVisitors) {
@@ -393,6 +475,33 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
           }
         }
 
+        // Phase 3: Drop Gesture Detection (Fist held >= 300ms, then released to open palm)
+        if (mechanicsSwitches.dropGesture && trackedHands.length > 0) {
+          trackedHands.forEach((hand, hIdx) => {
+            if (!hand.active) return;
+            const wasFist = prevHandFistStateRef.current[hIdx];
+            const isFist = hand.isFist;
+            const now = currentTime;
+
+            if (isFist) {
+              if (!wasFist) {
+                handFistStartTimeRef.current[hIdx] = now;
+              }
+            } else if (wasFist) {
+              // Transition from fist to open palm
+              const heldTime = now - handFistStartTimeRef.current[hIdx];
+              if (heldTime >= cfg.fistHoldTriggerMs && (now - lastDropTimeRef.current >= cfg.dropCooldownMs)) {
+                // Drop gesture triggered!
+                lastDropTimeRef.current = now;
+                triggerDropAt(hand.palmX * displayWidth, hand.palmY * displayHeight);
+              }
+              handFistStartTimeRef.current[hIdx] = 0;
+            }
+
+            prevHandFistStateRef.current[hIdx] = isFist;
+          });
+        }
+
         // Active influence points
         const influencePoints: {
           x: number;
@@ -413,7 +522,6 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
           const hy = hand.palmY * displayHeight;
 
           if (hand.isFist && mechanicsSwitches.gestures) {
-            // Closed fist = "Weight" gesture: Small radius, peak wght 900
             influencePoints.push({
               x: hx,
               y: hy,
@@ -426,7 +534,6 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
               wakeSpeed: hand.speed
             });
           } else {
-            // Open palm = Wide, moderate influence
             influencePoints.push({
               x: hx,
               y: hy,
@@ -441,7 +548,7 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
           }
         });
 
-        // Add Head (Subtle anchor so hands dominate)
+        // Add Head
         if (mechanicsSwitches.headTracking) {
           trackedPeople.forEach((person) => {
             if (!person.active || !person.nosePos.visible) return;
@@ -459,7 +566,7 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
           });
         }
 
-        // Residue exponential decay lambda: half-life ~45s
+        // Phase 0: Contrast Guard & 30s half-life decay
         const residueDecayFactor = Math.exp((-Math.LN2 / cfg.residueHalfLifeSeconds) * dtSec);
 
         let totalWghtSum = 0;
@@ -467,6 +574,7 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
         let totalCharCount = 0;
         let totalResidueSum = 0;
         let maxWeightDropVelocity = 0;
+        let totalSilhouetteCoverage = 0;
 
         const baseWeight = manualAxes ? manualAxes.wght : cfg.baseWght;
         const baseWidth = manualAxes ? manualAxes.wdth : cfg.baseWdth;
@@ -475,8 +583,8 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
           lineChars.forEach((ch) => {
             totalCharCount++;
 
-            // 1. Residue Update: Accumulate under influence, decay slowly
-            let maxInfluence = 0;
+            // 1. Spatial Hand/Head Influence
+            let handHeadInfluence = 0;
             let rippleWakeOffset = 0;
 
             if (influencePoints.length > 0) {
@@ -489,7 +597,7 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
                   const normDist = dist / pt.radius;
                   const falloff = Math.cos(normDist * (Math.PI / 2));
                   const inf = Math.pow(Math.max(0, falloff), cfg.falloffExponent) * pt.depth;
-                  if (inf > maxInfluence) maxInfluence = inf;
+                  if (inf > handHeadInfluence) handHeadInfluence = inf;
 
                   // Hand speed ripple
                   if (mechanicsSwitches.speedRipple && pt.wakeSpeed > 0.35) {
@@ -502,19 +610,38 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
               });
             }
 
-            // Accumulate residue
+            // 2. Phase 2: Body Silhouette Mask Sampling (Soft edge blurred)
+            let silhouetteInfluence = 0;
+            if (activeMask) {
+              const normX = ch.x / displayWidth;
+              const normY = ch.y / displayHeight;
+              const cov = sampleSilhouetteMask(activeMask, normX, normY);
+              silhouetteInfluence = Math.min(1.0, cov * cfg.silhouetteCoverageScale);
+              totalSilhouetteCoverage += silhouetteInfluence;
+            }
+
+            // Merge Hand/Head and Silhouette via smooth max
+            const mergedMaxInfluence = smoothMax(handHeadInfluence, silhouetteInfluence, 0.12);
+
+            // 3. Phase 0 Residue Update (Capped at wght +150 above resting weight)
             if (mechanicsSwitches.residue) {
-              if (maxInfluence > 0.05) {
-                ch.residue = Math.min(1.0, ch.residue + maxInfluence * cfg.residueAccumulationRate * dtSec);
+              if (mergedMaxInfluence > 0.05) {
+                ch.residue = Math.min(1.0, ch.residue + mergedMaxInfluence * cfg.residueAccumulationRate * dtSec);
               }
               ch.residue *= residueDecayFactor;
+
+              // Phase 0: Slow pull of resting mean toward ~230-250 when quiet
+              if (mechanicsSwitches.contrastGuard && ambientFactor > 0.4) {
+                ch.residue *= Math.pow(0.96, dtSec);
+              }
             } else {
               ch.residue = 0;
             }
             totalResidueSum += ch.residue;
 
-            // Resting weight floor for this glyph including residue imprint (capped at 500)
-            const residueContribution = (cfg.maxResidueWght - baseWeight) * ch.residue;
+            // Phase 0: Cap residue at wght +150 above resting weight (max 350w floor)
+            const maxOffset = mechanicsSwitches.contrastGuard ? cfg.maxResidueWghtOffset : (cfg.maxResidueWght - baseWeight);
+            const residueContribution = Math.min(maxOffset, maxOffset * ch.residue);
             const glyphRestingWght = baseWeight + residueContribution;
 
             let targetW = glyphRestingWght;
@@ -523,9 +650,9 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
             // Dominant contributor tracking for Source Tinting
             let contributor: DominantContributor = 'none';
 
-            // 2. Apply Visitor Influence with Semantic Mass Responsiveness
-            if (maxInfluence > 0) {
-              const effectiveInf = Math.max(0, maxInfluence - rippleWakeOffset);
+            // 4. Apply Visitor Influence with Semantic Mass Responsiveness
+            if (mergedMaxInfluence > 0) {
+              const effectiveInf = Math.max(0, mergedMaxInfluence - rippleWakeOffset);
               const semanticResp = mechanicsSwitches.semanticMass ? ch.wordResponsiveness : 1.0;
               const semanticTargetDelta = (cfg.maxWght - glyphRestingWght) * effectiveInf * semanticResp;
               const visitorTargetW = glyphRestingWght + semanticTargetDelta;
@@ -534,18 +661,20 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
               targetW = targetW * (1 - presenceFactor) + visitorTargetW * presenceFactor;
               targetWd = targetWd * (1 - presenceFactor) + visitorTargetWd * presenceFactor;
 
-              if (effectiveInf * presenceFactor > 0.15) {
+              if (silhouetteInfluence > handHeadInfluence && silhouetteInfluence > 0.15) {
+                contributor = 'silhouette';
+              } else if (effectiveInf * presenceFactor > 0.15) {
                 contributor = 'interaction';
               }
             }
 
-            // 3. Two-Hands Stretch between hands
+            // Two-Hands Stretch between hands
             if (twoHandStretchActive && ch.x >= stretchMinX && ch.x <= stretchMaxX) {
               targetWd = Math.max(targetWd, stretchTargetWdth);
               contributor = 'interaction';
             }
 
-            // 4. Idle Ambient Breathing / Attract Mode Wave
+            // Idle Ambient Breathing / Attract Mode Wave
             if (ambientFactor > 0.001) {
               if (attractWaveActive && attractWaveCenterNorm >= 0) {
                 const normX = ch.x / displayWidth;
@@ -562,16 +691,66 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
                 );
                 const breathMod = (wave + 1) * 0.5;
                 targetW += breathMod * cfg.ambientWaveAmplitude * ambientFactor;
-                targetWd += breathMod * 6 * ambientFactor;
+                targetWd += breathMod * 5 * ambientFactor;
               }
             }
 
-            if (contributor === 'none' && ch.residue > 0.12) {
+            if (contributor === 'none' && ch.residue > 0.15) {
               contributor = 'residue';
             }
             ch.dominantContributor = contributor;
 
-            // 5. Physical Mass & Inertia with Semantic Inertia Scaling
+            // 5. Phase 1: Physical Gravity & Drift Offsets
+            if (mechanicsSwitches.gravity) {
+              const currentWNorm = Math.max(0, Math.min(1, (ch.currentWght - baseWeight) / (cfg.maxWght - baseWeight)));
+
+              if (ch.isHeavyWord) {
+                // Heavy words sag up to 8px below baseline proportional to current weight
+                ch.targetOffsetY = currentWNorm * cfg.heavyMaxSagPx;
+                ch.targetOffsetX = 0;
+              } else if (ch.isLightWord) {
+                // Light words lift up to 6px and drift sideways 2-3px when influenced
+                if (mergedMaxInfluence > 0.05) {
+                  ch.targetOffsetY = -cfg.lightMaxLiftPx * Math.min(1.0, mergedMaxInfluence * 1.5);
+                  ch.targetOffsetX = Math.sin(ch.charIndex * 1.7 + timeSec * 1.5) * cfg.lightMaxDriftPx * mergedMaxInfluence;
+                } else {
+                  ch.targetOffsetY = 0;
+                  ch.targetOffsetX = 0;
+                }
+              } else {
+                ch.targetOffsetY = 0;
+                ch.targetOffsetX = 0;
+              }
+
+              // Spring settle for Y offset
+              const forceOffsetY = cfg.gravitySpringStiffness * (ch.targetOffsetY - ch.offsetY) - cfg.gravityDampingRatio * ch.velocityY;
+              ch.velocityY += forceOffsetY * dtFactor;
+              ch.offsetY += ch.velocityY * dtFactor;
+
+              // Spring settle for X offset
+              const forceOffsetX = cfg.gravitySpringStiffness * (ch.targetOffsetX - ch.offsetX) - cfg.gravityDampingRatio * ch.velocityX;
+              ch.velocityX += forceOffsetX * dtFactor;
+              ch.offsetX += ch.velocityX * dtFactor;
+            } else {
+              ch.offsetY = 0;
+              ch.offsetX = 0;
+            }
+
+            // Phase 3: Drop Gesture Recovery Spring
+            if (ch.dropOffset > 0.05 || Math.abs(ch.dropVelocity) > 0.05) {
+              // Spring back over ~1.2s, ordered by weight (heavy ones recover slower via wordInertia)
+              const recoveryInertia = ch.wordInertia * 1.1;
+              const dropSpringForce = -cfg.gravitySpringStiffness * ch.dropOffset - cfg.gravityDampingRatio * ch.dropVelocity;
+              ch.dropVelocity += (dropSpringForce / recoveryInertia) * dtFactor;
+              ch.dropOffset += ch.dropVelocity * dtFactor;
+
+              if (Math.abs(ch.dropOffset) < 0.05 && Math.abs(ch.dropVelocity) < 0.05) {
+                ch.dropOffset = 0;
+                ch.dropVelocity = 0;
+              }
+            }
+
+            // 6. Physical Mass & Inertia with Semantic Inertia Scaling
             const normalizedCurrentWeight = Math.max(
               0,
               Math.min(1, (ch.currentWght - baseWeight) / (cfg.maxWght - baseWeight))
@@ -620,6 +799,7 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
         const effectiveShowResidueHeatmap = showResidueHeatmap || (isMechanicsPanelOpen && wallVisualizations.residueHeatmap);
         const useSourceTint = isMechanicsPanelOpen && wallVisualizations.sourceTint;
 
+        // Draw Glyphs from Atlas
         lines.forEach((lineChars) => {
           lineChars.forEach((ch) => {
             if (ch.char === ' ') return;
@@ -634,6 +814,7 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
             let glyphColor = cfg.textColor;
             if (useSourceTint) {
               if (ch.dominantContributor === 'interaction') glyphColor = cfg.interactionTintColor;
+              else if (ch.dominantContributor === 'silhouette') glyphColor = cfg.silhouetteTintColor;
               else if (ch.dominantContributor === 'residue') glyphColor = cfg.residueTintColor;
               else if (ch.dominantContributor === 'idle') glyphColor = cfg.idleTintColor;
             }
@@ -646,8 +827,9 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
             const lowWdth = Math.floor(ch.currentWdth / 10) * 10;
             const highWdth = Math.min(120, lowWdth + 10);
 
-            const drawX = ch.x - slotHalfW;
-            const drawY = ch.y - slotHalfH;
+            // Phase 1 Gravity & Phase 3 Drop Offset move ONLY the draw position!
+            const drawX = ch.x - slotHalfW + ch.offsetX;
+            const drawY = ch.y - slotHalfH + ch.offsetY + ch.dropOffset;
 
             const imgLow = glyphAtlas.getGlyph(ch.char, lowWght, lowWdth, glyphColor);
 
@@ -666,6 +848,30 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
 
         ctx.globalAlpha = 1.0;
 
+        // Phase 2 Silhouette Mask Outline Visualization
+        if (wallVisualizations.maskOutline && activeMask) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(59, 130, 246, 0.45)';
+          ctx.lineWidth = 1.5;
+          const stepX = displayWidth / 128;
+          const stepY = displayHeight / 72;
+
+          for (let my = 1; my < 71; my += 2) {
+            for (let mx = 1; mx < 127; mx += 2) {
+              const idx = my * 128 + mx;
+              if (activeMask[idx] > 128) {
+                // Check edge
+                const isEdge = activeMask[idx - 1] === 0 || activeMask[idx + 1] === 0 ||
+                               activeMask[idx - 128] === 0 || activeMask[idx + 128] === 0;
+                if (isEdge) {
+                  ctx.strokeRect(mx * stepX, my * stepY, stepX * 2, stepY * 2);
+                }
+              }
+            }
+          }
+          ctx.restore();
+        }
+
         // Source Tint Legend on Canvas when active
         if (useSourceTint) {
           const legendX = 24;
@@ -675,16 +881,19 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
           ctx.textAlign = 'left';
 
           ctx.fillStyle = cfg.interactionTintColor;
-          ctx.fillText('■ Interaction', legendX, legendY);
+          ctx.fillText('■ Hand/Head', legendX, legendY);
+
+          ctx.fillStyle = cfg.silhouetteTintColor;
+          ctx.fillText('■ Silhouette', legendX + 95, legendY);
 
           ctx.fillStyle = cfg.residueTintColor;
-          ctx.fillText('■ Residue Memory', legendX + 110, legendY);
+          ctx.fillText('■ Residue Memory', legendX + 195, legendY);
 
           ctx.fillStyle = cfg.idleTintColor;
-          ctx.fillText('■ Attract Wave', legendX + 240, legendY);
+          ctx.fillText('■ Attract Wave', legendX + 325, legendY);
 
           ctx.fillStyle = cfg.textColor;
-          ctx.fillText('■ Resting Baseline', legendX + 360, legendY);
+          ctx.fillText('■ Baseline', legendX + 435, legendY);
         }
 
         // Debug influence rings & Two-Hands Stretch bounds
@@ -692,7 +901,6 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
 
         if (effectiveShowInfluence) {
           if (twoHandStretchActive) {
-            // Draw horizontal stretch bar between hands
             ctx.strokeStyle = 'rgba(56, 189, 248, 0.4)';
             ctx.lineWidth = 2;
             ctx.setLineDash([4, 4]);
@@ -776,7 +984,10 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
             meanResidue: totalCharCount > 0 ? totalResidueSum / totalCharCount : 0,
             idleStatus: attractWaveActive ? 'Attract Wave Sweeping' : (hasVisitors ? 'Active' : `Idle (${Math.round(idleDurationSecRef.current)}s)`),
             meanWeight: Math.round(meanWght),
-            droneActive: presenceFactor > 0
+            droneActive: presenceFactor > 0,
+            silhouetteFps: activeMask ? 18 : 0,
+            silhouetteCoverage: totalCharCount > 0 ? (totalSilhouetteCoverage / totalCharCount) * 100 : 0,
+            lastDropInfo: lastDropInfoRef.current
           });
         }
 
@@ -801,6 +1012,8 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
     manualAxes,
     trackedPeopleRef,
     trackedHandsRef,
+    silhouetteMaskRef,
+    fps,
     isDebugActive,
     showInfluencePoints,
     showResidueHeatmap,
@@ -811,7 +1024,8 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
     onFpsUpdate,
     onMetricsUpdate,
     onTimingUpdate,
-    onTelemetryUpdate
+    onTelemetryUpdate,
+    triggerDropAt
   ]);
 
   return (
