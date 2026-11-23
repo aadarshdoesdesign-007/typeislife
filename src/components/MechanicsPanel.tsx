@@ -5,6 +5,8 @@ import { INSTALLATION_CONFIG } from '../config';
 interface MechanicsPanelProps {
   isOpen: boolean;
   onClose: () => void;
+  fillScale?: number;
+  onFillScaleChange?: (scale: number) => void;
   mechanicsSwitches: MechanicsSwitches;
   onToggleMechanic: (key: keyof MechanicsSwitches) => void;
   wallVisualizations: WallVisualizations;
@@ -21,6 +23,8 @@ interface MechanicsPanelProps {
 export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
   isOpen,
   onClose,
+  fillScale,
+  onFillScaleChange,
   mechanicsSwitches,
   onToggleMechanic,
   wallVisualizations,
@@ -138,6 +142,59 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
           </span>
         </div>
       )}
+
+      {/* Canvas Layout / Text Size Control */}
+      <div
+        style={{
+          background: 'rgba(255, 255, 255, 0.04)',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          borderRadius: 6,
+          padding: '8px 10px',
+          marginBottom: 12
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <span style={{ fontWeight: 700, color: '#fff', fontSize: 10 }}>TEXT SIZE (FILL SCALE)</span>
+          <span style={{ color: '#38bdf8', fontWeight: 700, fontSize: 10 }}>
+            {((fillScale ?? INSTALLATION_CONFIG.fillScale) * 100).toFixed(0)}% ({(fillScale ?? INSTALLATION_CONFIG.fillScale).toFixed(2)})
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            type="range"
+            min={0.5}
+            max={0.95}
+            step={0.01}
+            value={fillScale ?? INSTALLATION_CONFIG.fillScale}
+            onChange={(e) => onFillScaleChange?.(parseFloat(e.target.value))}
+            style={{
+              flex: 1,
+              accentColor: '#38bdf8',
+              cursor: 'pointer'
+            }}
+          />
+          <button
+            onClick={() => onFillScaleChange?.(0.72)}
+            title="Reset to default (0.72)"
+            style={{
+              background: 'rgba(255, 255, 255, 0.08)',
+              border: '1px solid rgba(255, 255, 255, 0.18)',
+              color: '#aaa',
+              borderRadius: 3,
+              padding: '2px 6px',
+              fontSize: 8.5,
+              cursor: 'pointer'
+            }}
+          >
+            Reset
+          </button>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', color: '#666', fontSize: 8, marginTop: 4 }}>
+          <span>0.50 (compact)</span>
+          <span>Default: 0.72</span>
+          <span>0.95 (maximum)</span>
+        </div>
+      </div>
 
       {/* SECTION 1: INTERACTIVE MECHANICS WITH INDIVIDUAL ISOLATION SWITCHES */}
       <div style={{ marginBottom: 12 }}>

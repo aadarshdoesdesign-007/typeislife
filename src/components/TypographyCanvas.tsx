@@ -20,6 +20,7 @@ export interface TypographyCanvasRef {
 
 interface TypographyCanvasProps {
   manualAxes?: FontAxisState;
+  fillScale?: number;
   trackedPeopleRef: React.MutableRefObject<TrackedPerson[]>;
   trackedHandsRef: React.MutableRefObject<TrackedHand[]>;
   silhouetteMaskRef: React.MutableRefObject<Uint8Array | null>;
@@ -107,10 +108,15 @@ function solveLayoutFit(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
-  cfg: typeof INSTALLATION_CONFIG
+  cfg: typeof INSTALLATION_CONFIG,
+  fillScale: number = cfg.fillScale
 ): { lines: string[]; fontSize: number; lineSpacing: number; usingAppendedPassage: boolean } {
-  const targetW = width * cfg.targetWidthRatio;
-  const targetH = height * cfg.targetHeightRatio;
+  // Real breathing room: min margin of 8% left/right, 10% top/bottom
+  const maxAllowedW = width * (1.0 - 2 * cfg.minMarginXRatio);
+  const maxAllowedH = height * (1.0 - 2 * cfg.minMarginYRatio);
+
+  const targetW = Math.min(maxAllowedW, width * fillScale);
+  const targetH = Math.min(maxAllowedH, height * (fillScale * (0.65 / 0.72)));
   const aspect = width / height;
 
   const wordsP1 = EXHIBITION_PASSAGES.paragraph1.split(/\s+/).filter(Boolean);
@@ -203,6 +209,7 @@ function solveLayoutFit(
 
 export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvasProps>(({
   manualAxes,
+  fillScale = INSTALLATION_CONFIG.fillScale,
   trackedPeopleRef,
   trackedHandsRef,
   silhouetteMaskRef,
@@ -301,9 +308,14 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
       charactersRef.current.forEach((lineChars) => {
         lineChars.forEach((ch) => {
           ch.residue = 0;
-          ch.currentWght = cfg.baseWght;
-          ch.targetWght = cfg.baseWght;
+          const restWght = ch.isHeavyWord ? 390 : cfg.baseWght;
+          const restWdth = ch.isHeavyWord ? 88 : cfg.baseWdth;
+          ch.currentWght = restWght;
+          ch.targetWght = restWght;
+          ch.currentWdth = restWdth;
+          ch.targetWdth = restWdth;
           ch.velocityWght = 0;
+          ch.velocityWdth = 0;
         });
       });
     },
@@ -331,15 +343,16 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
     }
   }, []);
 
-  // Compute fixed slot layout: guarantees paragraph fits canvas aspect ratio (~92% W, ~88% H)
-  const computeFixedSlotLayout = useCallback((width: number, height: number) => {
+  // Compute fixed slot layout: guarantees paragraph fits canvas aspect ratio with breathing room margins
+  const computeFixedSlotLayout = useCallback((width: number, height: number, customFillScale?: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     const cfg = INSTALLATION_CONFIG;
-    const { lines, fontSize, lineSpacing } = solveLayoutFit(ctx, width, height, cfg);
+    const activeFillScale = customFillScale ?? fillScale;
+    const { lines, fontSize, lineSpacing } = solveLayoutFit(ctx, width, height, cfg, activeFillScale);
 
     currentFontSizeRef.current = fontSize;
 
@@ -389,6 +402,10 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
         const cleanWord = wStr.replace(/[^A-Z]/g, '');
         const semanticProps = SEMANTIC_MASS_TABLE[cleanWord] || DEFAULT_SEMANTIC_CONFIG;
 
+        // Semantic Mass resting hierarchy: heavy words rest at ~390w, light/normal at 200w
+        const baseRestingWght = semanticProps.isHeavy ? 390 : cfg.baseWght;
+        const baseRestingWdth = semanticProps.isHeavy ? 88 : cfg.baseWdth;
+
         for (let c = 0; c < N; c++) {
           // Max envelope character offsets
           ctx.font = `${cfg.maxWght} ${fontSize}px "Roboto Flex Variable", sans-serif`;
@@ -432,11 +449,11 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
             wordStartX: currentWordX,
             wordMaxW,
             slotWidth: maxCharW,
-            currentWght: cfg.baseWght,
-            targetWght: cfg.baseWght,
+            currentWght: baseRestingWght,
+            targetWght: baseRestingWght,
             velocityWght: 0,
-            currentWdth: cfg.baseWdth,
-            targetWdth: cfg.baseWdth,
+            currentWdth: baseRestingWdth,
+            targetWdth: baseRestingWdth,
             velocityWdth: 0,
             word: cleanWord,
             wordResponsiveness: semanticProps.responsiveness,
@@ -470,7 +487,15 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
     isFadingLayoutRef.current = true;
     fadeStartTimeRef.current = performance.now();
     layoutFadeAlphaRef.current = 0.0;
-  }, []);
+  }, [fillScale]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !fontReady) return;
+    const displayWidth = canvas.clientWidth;
+    const displayHeight = canvas.clientHeight;
+    computeFixedSlotLayout(displayWidth, displayHeight, fillScale);
+  }, [fillScale, fontReady, computeFixedSlotLayout]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -557,22 +582,12 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
 
         const trackedPeople = mechanicsSwitches.headTracking ? rawPeople : [];
         const trackedHands = mechanicsSwitches.hands ? rawHands : [];
-        const activeMask = (mechanicsSwitches.bodySilhouette && fps >= cfg.fpsFallbackThreshold)
+        const hasHumanPose = trackedPeople.length > 0 || trackedHands.length > 0;
+        const activeMask = (mechanicsSwitches.bodySilhouette && fps >= cfg.fpsFallbackThreshold && hasHumanPose)
           ? silhouetteMaskRef.current
           : null;
 
-        // Detect if mask actually contains non-zero person pixels
-        let hasPersonInMask = false;
-        if (activeMask) {
-          for (let i = 0; i < activeMask.length; i += 16) {
-            if (activeMask[i] > 100) {
-              hasPersonInMask = true;
-              break;
-            }
-          }
-        }
-
-        const hasVisitors = trackedPeople.length > 0 || trackedHands.length > 0 || hasPersonInMask;
+        const hasVisitors = hasHumanPose;
 
         // Attract mode timing
         if (hasVisitors) {
@@ -841,13 +856,17 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
             }
             totalResidueSum += ch.residue;
 
-            // Phase 0: Cap residue at wght +150 above resting weight (max 350w floor)
-            const maxOffset = mechanicsSwitches.contrastGuard ? cfg.maxResidueWghtOffset : (cfg.maxResidueWght - baseWeight);
+            // Semantic resting hierarchy: heavy words rest at ~390w (350-450w range), light/normal at 200w
+            const baseRestingWght = ch.isHeavyWord ? 390 : baseWeight;
+            const baseRestingWdth = ch.isHeavyWord ? 88 : baseWidth;
+
+            // Phase 0: Cap residue at wght +150 above resting weight
+            const maxOffset = cfg.maxResidueWghtOffset;
             const residueContribution = Math.min(maxOffset, maxOffset * ch.residue);
-            const glyphRestingWght = baseWeight + residueContribution;
+            const glyphRestingWght = baseRestingWght + residueContribution;
 
             let targetW = glyphRestingWght;
-            let targetWd = baseWidth;
+            let targetWd = baseRestingWdth;
 
             // Dominant contributor tracking for Source Tinting
             let contributor: DominantContributor = 'none';
@@ -858,7 +877,7 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
               const semanticResp = mechanicsSwitches.semanticMass ? ch.wordResponsiveness : 1.0;
               const semanticTargetDelta = (cfg.maxWght - glyphRestingWght) * effectiveInf * semanticResp;
               const visitorTargetW = glyphRestingWght + semanticTargetDelta;
-              const visitorTargetWd = baseWidth + (cfg.maxWdth - baseWidth) * effectiveInf;
+              const visitorTargetWd = baseRestingWdth + (cfg.maxWdth - baseRestingWdth) * effectiveInf;
 
               targetW = targetW * (1 - presenceFactor) + visitorTargetW * presenceFactor;
               targetWd = targetWd * (1 - presenceFactor) + visitorTargetWd * presenceFactor;

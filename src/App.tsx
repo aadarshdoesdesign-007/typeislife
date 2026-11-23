@@ -78,6 +78,7 @@ export function App() {
   // Tooling visibility: hidden by default in normal exhibition mode
   const [isDebugOpen, setIsDebugOpen] = useState<boolean>(false);
   const [isMechanicsPanelOpen, setIsMechanicsPanelOpen] = useState<boolean>(false);
+  const [fillScale, setFillScale] = useState<number>(INSTALLATION_CONFIG.fillScale);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [showInfluencePoints, setShowInfluencePoints] = useState<boolean>(true);
   const [showResidueHeatmap, setShowResidueHeatmap] = useState<boolean>(false);
@@ -547,6 +548,7 @@ export function App() {
       {/* Main Exhibition Typography Canvas */}
       <TypographyCanvas
         ref={canvasRef}
+        fillScale={fillScale}
         trackedPeopleRef={effectiveTrackedPeopleRef}
         trackedHandsRef={effectiveTrackedHandsRef}
         silhouetteMaskRef={effectiveMaskRef}
@@ -595,6 +597,8 @@ export function App() {
       <MechanicsPanel
         isOpen={isMechanicsPanelOpen}
         onClose={() => setIsMechanicsPanelOpen(false)}
+        fillScale={fillScale}
+        onFillScaleChange={setFillScale}
         mechanicsSwitches={mechanicsSwitches}
         onToggleMechanic={handleToggleMechanic}
         wallVisualizations={wallVisualizations}

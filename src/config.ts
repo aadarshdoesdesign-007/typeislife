@@ -69,7 +69,7 @@ export const INSTALLATION_CONFIG = {
   idleMeanPullRate: 0.14,        // Active restorative pull restoring baseline when uninfluenced
 
   // --- Phase 1: Physical Gravity Offsets ---
-  heavyMaxSagPx: 8.0,            // Heavy words sag up to 8px below baseline
+  heavyMaxSagPx: 6.0,            // Reduced from 8px to 6px so gravity sag never overlaps line below
   lightMaxLiftPx: 6.0,           // Light words lift up to 6px above baseline
   lightMaxDriftPx: 2.8,          // Light words drift sideways 2-3px
   gravitySpringStiffness: 0.12,  // Spring settle stiffness
@@ -136,14 +136,16 @@ export const INSTALLATION_CONFIG = {
 
   // --- Exhibition Kiosk & Layout ---
   targetFps: 60,
-  lineSpacing: 1.48,
-  minLineSpacing: 1.25,
-  maxLineSpacing: 1.60,
+  fillScale: 0.72,          // Default fill scale (0.50 - 0.95): controls canvas coverage
+  targetWidthRatio: 0.72,   // Target ~72% of canvas width at default
+  targetHeightRatio: 0.65,  // Target ~65% of canvas height at default
+  minMarginXRatio: 0.08,    // Real breathing room: min 8% margin left/right
+  minMarginYRatio: 0.10,    // Real breathing room: min 10% margin top/bottom
+  lineSpacing: 1.58,        // Increased leading so heaviest lines & sag never overlap line below
+  minLineSpacing: 1.40,
+  maxLineSpacing: 1.75,
   slotPadding: 0.8,
-  targetWidthRatio: 0.92,   // Target ~92% of canvas width
-  targetHeightRatio: 0.88,  // Target ~88% of canvas height
-  minMarginRatio: 0.03,     // Minimum ~3% margin around block
-  layoutFadeDurationMs: 300,// Short cross-fade on resize / fullscreen
+  layoutFadeDurationMs: 250,// Short cross-fade on resize / slider drag
   wordSpacingFactor: 0.38,  // Constant word-to-word space: 0.38 * fontSize
 
   // --- Aesthetic Exhibition Palette ---
