@@ -95,7 +95,8 @@ export function App() {
     residue: true,
     attractMode: true,
     sound: true,
-    hands: true
+    hands: true,
+    handRhythm: true
   });
 
   // Wall visualizations
@@ -118,7 +119,10 @@ export function App() {
     droneActive: false,
     silhouetteFps: 18,
     silhouetteCoverage: 0,
-    lastDropInfo: 'None'
+    lastDropInfo: 'None',
+    rhythmBpm: 84,
+    rhythmVoices: 0,
+    lastRhythmHit: 'None'
   });
 
   // Concept test modes

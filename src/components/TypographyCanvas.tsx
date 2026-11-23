@@ -9,8 +9,7 @@ import type {
   MechanicsLiveTelemetry,
   DominantContributor
 } from '../types';
-import { EXHIBITION_TEXT_LINES } from '../constants/text';
-import { INSTALLATION_CONFIG, SEMANTIC_MASS_TABLE, DEFAULT_SEMANTIC_CONFIG } from '../config';
+import { EXHIBITION_PASSAGES, INSTALLATION_CONFIG, SEMANTIC_MASS_TABLE, DEFAULT_SEMANTIC_CONFIG } from '../config';
 import { audioEngine } from '../services/audioEngine';
 import { glyphAtlas } from '../utils/glyphAtlas';
 
@@ -49,7 +48,8 @@ const DEFAULT_MECHANICS_SWITCHES: MechanicsSwitches = {
   residue: true,
   attractMode: true,
   sound: true,
-  hands: true
+  hands: true,
+  handRhythm: true
 };
 
 const DEFAULT_WALL_VISUALIZATIONS: WallVisualizations = {
@@ -75,6 +75,130 @@ function sampleSilhouetteMask(mask: Uint8Array, normX: number, normY: number): n
     }
   }
   return sum / (9 * 255);
+}
+
+function wrapWordsGreedy(words: string[], maxLineChars: number): string[] {
+  const lines: string[] = [];
+  let currentWords: string[] = [];
+  let currentLength = 0;
+
+  for (const w of words) {
+    const space = currentWords.length > 0 ? 1 : 0;
+    if (currentLength + space + w.length <= maxLineChars) {
+      currentWords.push(w);
+      currentLength += space + w.length;
+    } else {
+      if (currentWords.length > 0) {
+        lines.push(currentWords.join(' '));
+      }
+      currentWords = [w];
+      currentLength = w.length;
+    }
+  }
+
+  if (currentWords.length > 0) {
+    lines.push(currentWords.join(' '));
+  }
+
+  return lines;
+}
+
+function solveLayoutFit(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  cfg: typeof INSTALLATION_CONFIG
+): { lines: string[]; fontSize: number; lineSpacing: number; usingAppendedPassage: boolean } {
+  const targetW = width * cfg.targetWidthRatio;
+  const targetH = height * cfg.targetHeightRatio;
+  const aspect = width / height;
+
+  const wordsP1 = EXHIBITION_PASSAGES.paragraph1.split(/\s+/).filter(Boolean);
+  const wordsBoth = `${EXHIBITION_PASSAGES.paragraph1} ${EXHIBITION_PASSAGES.paragraph2}`.split(/\s+/).filter(Boolean);
+
+  let bestConfig: {
+    lines: string[];
+    fontSize: number;
+    lineSpacing: number;
+    usingAppendedPassage: boolean;
+    score: number;
+  } | null = null;
+
+  const passageCandidates = [
+    { words: wordsP1, isAppended: false },
+    { words: wordsBoth, isAppended: true }
+  ];
+
+  for (const { words, isAppended } of passageCandidates) {
+    for (let maxChars = 28; maxChars <= 85; maxChars++) {
+      const candidateLines = wrapWordsGreedy(words, maxChars);
+      const numLines = candidateLines.length;
+      if (numLines < 6 || numLines > 32) continue;
+
+      const refSize = 100;
+      ctx.font = `${cfg.maxWght} ${refSize}px "Roboto Flex Variable", sans-serif`;
+      if ('fontVariationSettings' in ctx) {
+        (ctx as any).fontVariationSettings = `'wght' ${cfg.maxWght}, 'wdth' ${cfg.maxWdth}`;
+      }
+
+      let maxLineNormW = 0;
+      for (const lineText of candidateLines) {
+        const lineWords = lineText.split(/\s+/).filter(Boolean);
+        let lineW = 0;
+        for (let wi = 0; wi < lineWords.length; wi++) {
+          const w = lineWords[wi];
+          const wMeasure = ctx.measureText(w).width;
+          const spaceMeasure = wi < lineWords.length - 1 ? refSize * cfg.wordSpacingFactor : 0;
+          lineW += wMeasure + spaceMeasure;
+        }
+        if (lineW > maxLineNormW) maxLineNormW = lineW;
+      }
+
+      if (maxLineNormW <= 0) continue;
+
+      const fontSizeByWidth = (targetW / maxLineNormW) * refSize;
+      const requiredL = (targetH - fontSizeByWidth) / ((numLines - 1) * fontSizeByWidth);
+
+      if (requiredL >= cfg.minLineSpacing && requiredL <= cfg.maxLineSpacing) {
+        const idealSpacingDelta = Math.abs(requiredL - 1.48);
+        const appendBias = aspect < 1.15 ? (isAppended ? 30 : -10) : (isAppended ? -30 : 20);
+        const score = 100 - idealSpacingDelta * 40 + appendBias;
+
+        if (!bestConfig || score > bestConfig.score) {
+          bestConfig = {
+            lines: candidateLines,
+            fontSize: Math.floor(fontSizeByWidth),
+            lineSpacing: requiredL,
+            usingAppendedPassage: isAppended,
+            score
+          };
+        }
+      }
+    }
+
+    if (bestConfig && !bestConfig.usingAppendedPassage && bestConfig.score > 80 && aspect >= 1.2) {
+      break;
+    }
+  }
+
+  if (!bestConfig) {
+    const candidateLines = wrapWordsGreedy(wordsP1, 55);
+    const numLines = candidateLines.length;
+    const estFontSize = Math.floor(Math.min((targetW / 55) * 1.5, targetH / (numLines * 1.48)));
+    return {
+      lines: candidateLines,
+      fontSize: Math.max(16, estFontSize),
+      lineSpacing: 1.48,
+      usingAppendedPassage: false
+    };
+  }
+
+  return {
+    lines: bestConfig.lines,
+    fontSize: Math.max(16, bestConfig.fontSize),
+    lineSpacing: Math.max(cfg.minLineSpacing, Math.min(cfg.maxLineSpacing, bestConfig.lineSpacing)),
+    usingAppendedPassage: bestConfig.usingAppendedPassage
+  };
 }
 
 export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvasProps>(({
@@ -110,11 +234,20 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
   const idleDurationSecRef = useRef<number>(0);
   const presenceFadeRef = useRef<number>(0.0);
 
+  // Layout transition cross-fade state (short fade on resize / aspect ratio changes)
+  const layoutFadeAlphaRef = useRef<number>(1.0);
+  const isFadingLayoutRef = useRef<boolean>(false);
+  const fadeStartTimeRef = useRef<number>(0);
+
   // Phase 3 Drop Gesture state tracking per hand
   const prevHandFistStateRef = useRef<boolean[]>([false, false, false, false]);
   const handFistStartTimeRef = useRef<number[]>([0, 0, 0, 0]);
   const lastDropTimeRef = useRef<number>(0);
   const lastDropInfoRef = useRef<string>('None');
+
+  // Hand Rhythm tracking per hand
+  const prevHandNearestCharIdRef = useRef<Record<number, number>>({});
+  const lastHandMoveTimeRef = useRef<Record<number, number>>({});
 
   // Trigger Drop Gesture helper
   const triggerDropAt = useCallback((x: number, y: number) => {
@@ -144,16 +277,33 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
 
     if (heavyCount > 0 && mechanicsSwitches.sound) {
       audioEngine.triggerDropThud(heavyCount);
+      if (mechanicsSwitches.handRhythm) {
+        audioEngine.triggerHandRhythmHit({
+          handIndex: 0,
+          xNorm: x / (canvasRef.current?.clientWidth || 1920),
+          speed: 0.85,
+          letterWeight: 900,
+          word: 'DROP',
+          isHeavyWord: true,
+          isLightWord: false,
+          isFist: false,
+          isDrop: true
+        });
+      }
     }
     lastDropInfoRef.current = `Dropped (${heavyCount} heavy letters)`;
-  }, [mechanicsSwitches.sound]);
+  }, [mechanicsSwitches.sound, mechanicsSwitches.handRhythm]);
 
   // Expose imperative methods
   useImperativeHandle(ref, () => ({
     clearAllResidue: () => {
+      const cfg = INSTALLATION_CONFIG;
       charactersRef.current.forEach((lineChars) => {
         lineChars.forEach((ch) => {
           ch.residue = 0;
+          ch.currentWght = cfg.baseWght;
+          ch.targetWght = cfg.baseWght;
+          ch.velocityWght = 0;
         });
       });
     },
@@ -181,7 +331,7 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
     }
   }, []);
 
-  // Compute fixed slot layout: guarantees paragraph fits on 1920x1080 and 1280x720 with margins
+  // Compute fixed slot layout: guarantees paragraph fits canvas aspect ratio (~92% W, ~88% H)
   const computeFixedSlotLayout = useCallback((width: number, height: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -189,150 +339,137 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
     if (!ctx) return;
 
     const cfg = INSTALLATION_CONFIG;
-    const lines = EXHIBITION_TEXT_LINES;
+    const { lines, fontSize, lineSpacing } = solveLayoutFit(ctx, width, height, cfg);
 
-    // Boundaries: width <= 84% width, height <= 80% height
-    const maxLineLen = Math.max(...lines.map((l) => l.length));
-
-    let candidateFontSize = Math.floor(
-      Math.min(
-        (width * 0.84) / (maxLineLen * 0.78),
-        (height * 0.80) / (lines.length * cfg.lineSpacing)
-      )
-    );
-    candidateFontSize = Math.max(16, candidateFontSize);
-
-    ctx.font = `${cfg.maxWght} ${candidateFontSize}px "Roboto Flex Variable", sans-serif`;
-    if ('fontVariationSettings' in ctx) {
-      (ctx as any).fontVariationSettings = `'wght' ${cfg.maxWght}, 'wdth' ${cfg.maxWdth}`;
-    }
-
-    let maxMeasuredWidth = 0;
-    lines.forEach((lineText) => {
-      let lineW = 0;
-      for (let c = 0; c < lineText.length; c++) {
-        const ch = lineText[c];
-        if (ch === ' ') {
-          lineW += candidateFontSize * 0.28;
-        } else {
-          lineW += ctx.measureText(ch).width + cfg.slotPadding;
-        }
-      }
-      if (lineW > maxMeasuredWidth) maxMeasuredWidth = lineW;
-    });
-
-    const maxAllowedWidth = width * 0.84;
-    if (maxMeasuredWidth > maxAllowedWidth && maxMeasuredWidth > 0) {
-      candidateFontSize = Math.floor(candidateFontSize * (maxAllowedWidth / maxMeasuredWidth));
-    }
-
-    const responsiveFontSize = Math.max(15, candidateFontSize);
-    currentFontSizeRef.current = responsiveFontSize;
+    currentFontSizeRef.current = fontSize;
 
     const dpr = window.devicePixelRatio || 1;
-    glyphAtlas.init(responsiveFontSize, dpr);
+    glyphAtlas.init(fontSize, dpr);
     glyphAtlas.warmCache(lines);
 
-    const lineHeight = responsiveFontSize * cfg.lineSpacing;
-    const blockTotalHeight = lines.length * lineHeight;
-    const startY = (height - blockTotalHeight) / 2 + responsiveFontSize * 0.85;
-
-    ctx.font = `${cfg.maxWght} ${responsiveFontSize}px "Roboto Flex Variable", sans-serif`;
-    if ('fontVariationSettings' in ctx) {
-      (ctx as any).fontVariationSettings = `'wght' ${cfg.maxWght}, 'wdth' ${cfg.maxWdth}`;
-    }
+    const lineHeight = fontSize * lineSpacing;
+    const blockTotalHeight = (lines.length - 1) * lineHeight + fontSize;
+    const startY = (height - blockTotalHeight) / 2 + fontSize * 0.85;
+    const wordSpacing = fontSize * cfg.wordSpacingFactor;
 
     const newGrid: CharacterItem[][] = [];
+    let globalCharIdx = 0;
 
     lines.forEach((lineText, lineIdx) => {
       const lineY = startY + lineIdx * lineHeight;
-      const charSlotWidths: number[] = [];
-      let totalLineWidth = 0;
+      const lineWords = lineText.split(/\s+/).filter(Boolean);
 
-      for (let c = 0; c < lineText.length; c++) {
-        const ch = lineText[c];
-        let slotW: number;
-        if (ch === ' ') {
-          slotW = responsiveFontSize * 0.28;
-        } else {
-          const metrics = ctx.measureText(ch);
-          slotW = metrics.width + cfg.slotPadding;
-        }
-        charSlotWidths.push(slotW);
-        totalLineWidth += slotW;
+      // Measure max word widths at wght: 900, wdth: 125%
+      ctx.font = `${cfg.maxWght} ${fontSize}px "Roboto Flex Variable", sans-serif`;
+      if ('fontVariationSettings' in ctx) {
+        (ctx as any).fontVariationSettings = `'wght' ${cfg.maxWght}, 'wdth' ${cfg.maxWdth}`;
       }
+      const wordMaxMetrics: number[] = lineWords.map((w) => ctx.measureText(w).width);
+      const totalLineMaxW =
+        wordMaxMetrics.reduce((sum, w) => sum + w, 0) +
+        Math.max(0, lineWords.length - 1) * wordSpacing;
 
-      // Center line horizontally with comfortable equal margins
-      const lineStartX = (width - totalLineWidth) / 2;
-      let currentX = lineStartX;
+      // Measure base word widths at wght: 200, wdth: 70%
+      ctx.font = `${cfg.baseWght} ${fontSize}px "Roboto Flex Variable", sans-serif`;
+      if ('fontVariationSettings' in ctx) {
+        (ctx as any).fontVariationSettings = `'wght' ${cfg.baseWght}, 'wdth' ${cfg.baseWdth}`;
+      }
+      const wordBaseMetrics: number[] = lineWords.map((w) => ctx.measureText(w).width);
+
+      // Center the line horizontally with perfectly even margins
+      const lineStartX = (width - totalLineMaxW) / 2;
+      let currentWordX = lineStartX;
       const lineChars: CharacterItem[] = [];
 
-      // Extract words for Semantic Mass binding
-      const wordsInLine: { word: string; start: number; end: number }[] = [];
-      const regex = /[A-Z]+/g;
-      let match;
-      while ((match = regex.exec(lineText)) !== null) {
-        wordsInLine.push({
-          word: match[0],
-          start: match.index,
-          end: match.index + match[0].length
-        });
-      }
+      lineWords.forEach((wStr, wordIdx) => {
+        const wordMaxW = wordMaxMetrics[wordIdx];
+        const wordBaseW = wordBaseMetrics[wordIdx];
+        const N = wStr.length;
 
-      for (let c = 0; c < lineText.length; c++) {
-        const slotW = charSlotWidths[c];
-        const slotCenterX = currentX + slotW / 2;
+        const cleanWord = wStr.replace(/[^A-Z]/g, '');
+        const semanticProps = SEMANTIC_MASS_TABLE[cleanWord] || DEFAULT_SEMANTIC_CONFIG;
 
-        const foundWordMatch = wordsInLine.find((w) => c >= w.start && c < w.end);
-        const wordKey = foundWordMatch ? foundWordMatch.word : '';
-        const semanticProps = SEMANTIC_MASS_TABLE[wordKey] || DEFAULT_SEMANTIC_CONFIG;
+        for (let c = 0; c < N; c++) {
+          // Max envelope character offsets
+          ctx.font = `${cfg.maxWght} ${fontSize}px "Roboto Flex Variable", sans-serif`;
+          if ('fontVariationSettings' in ctx) {
+            (ctx as any).fontVariationSettings = `'wght' ${cfg.maxWght}, 'wdth' ${cfg.maxWdth}`;
+          }
+          const maxBefore = ctx.measureText(wStr.slice(0, c)).width;
+          const maxUpTo = ctx.measureText(wStr.slice(0, c + 1)).width;
+          const maxCharW = maxUpTo - maxBefore;
+          const maxCenterRel = maxBefore + maxCharW / 2;
 
-        const prevChar = charactersRef.current[lineIdx]?.[c];
-        const initialWght = prevChar ? prevChar.currentWght : cfg.baseWght;
-        const initialWdth = prevChar ? prevChar.currentWdth : cfg.baseWdth;
-        const initialResidue = prevChar ? prevChar.residue : 0;
+          // Base envelope character offsets with consistent optical tracking
+          ctx.font = `${cfg.baseWght} ${fontSize}px "Roboto Flex Variable", sans-serif`;
+          if ('fontVariationSettings' in ctx) {
+            (ctx as any).fontVariationSettings = `'wght' ${cfg.baseWght}, 'wdth' ${cfg.baseWdth}`;
+          }
+          const baseBefore = ctx.measureText(wStr.slice(0, c)).width;
+          const baseUpTo = ctx.measureText(wStr.slice(0, c + 1)).width;
+          const baseCharW = baseUpTo - baseBefore;
+          const baseNaturalCenterRel = baseBefore + baseCharW / 2;
 
-        lineChars.push({
-          char: lineText[c],
-          charIndex: c,
-          lineIndex: lineIdx,
-          x: slotCenterX,
-          y: lineY,
-          slotWidth: slotW,
-          currentWght: initialWght,
-          targetWght: initialWght,
-          velocityWght: 0,
-          currentWdth: initialWdth,
-          targetWdth: initialWdth,
-          velocityWdth: 0,
-          word: wordKey,
-          wordResponsiveness: semanticProps.responsiveness,
-          wordInertia: semanticProps.inertia,
-          isHeavyWord: Boolean(semanticProps.isHeavy),
-          isLightWord: Boolean(semanticProps.isLight),
-          residue: initialResidue,
-          dominantContributor: 'none',
-          lastDrawnWght: 0,
-          lastDrawnWdth: 0,
-          // Phase 1 Gravity & Offset physics
-          offsetX: 0,
-          targetOffsetX: 0,
-          velocityX: 0,
-          offsetY: 0,
-          targetOffsetY: 0,
-          velocityY: 0,
-          // Phase 3 Drop physics
-          dropOffset: 0,
-          dropVelocity: 0
-        });
+          let baseCenterRel: number;
+          if (N <= 1) {
+            baseCenterRel = wordMaxW / 2;
+          } else {
+            const extraTracking = (wordMaxW - wordBaseW) / (N - 1);
+            baseCenterRel = baseNaturalCenterRel + c * extraTracking;
+          }
 
-        currentX += slotW;
-      }
+          const baseX = currentWordX + baseCenterRel;
+          const maxX = currentWordX + maxCenterRel;
+
+          lineChars.push({
+            char: wStr[c],
+            charIndex: globalCharIdx++,
+            lineIndex: lineIdx,
+            x: baseX,
+            y: lineY,
+            baseX,
+            maxX,
+            wordStartX: currentWordX,
+            wordMaxW,
+            slotWidth: maxCharW,
+            currentWght: cfg.baseWght,
+            targetWght: cfg.baseWght,
+            velocityWght: 0,
+            currentWdth: cfg.baseWdth,
+            targetWdth: cfg.baseWdth,
+            velocityWdth: 0,
+            word: cleanWord,
+            wordResponsiveness: semanticProps.responsiveness,
+            wordInertia: semanticProps.inertia,
+            isHeavyWord: Boolean(semanticProps.isHeavy),
+            isLightWord: Boolean(semanticProps.isLight),
+            residue: 0,
+            dominantContributor: 'none',
+            lastDrawnWght: 0,
+            lastDrawnWdth: 0,
+            offsetX: 0,
+            targetOffsetX: 0,
+            velocityX: 0,
+            offsetY: 0,
+            targetOffsetY: 0,
+            velocityY: 0,
+            dropOffset: 0,
+            dropVelocity: 0
+          });
+        }
+
+        currentWordX += wordMaxW + wordSpacing;
+      });
 
       newGrid.push(lineChars);
     });
 
     charactersRef.current = newGrid;
+
+    // Trigger smooth fade so layout change is not jarring
+    isFadingLayoutRef.current = true;
+    fadeStartTimeRef.current = performance.now();
+    layoutFadeAlphaRef.current = 0.0;
   }, []);
 
   useEffect(() => {
@@ -348,7 +485,11 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
     };
 
     window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    document.addEventListener('fullscreenchange', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      document.removeEventListener('fullscreenchange', handleResize);
+    };
   }, [computeFixedSlotLayout]);
 
   // Main 60 FPS Render Loop
@@ -420,7 +561,18 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
           ? silhouetteMaskRef.current
           : null;
 
-        const hasVisitors = trackedPeople.length > 0 || trackedHands.length > 0 || (activeMask !== null);
+        // Detect if mask actually contains non-zero person pixels
+        let hasPersonInMask = false;
+        if (activeMask) {
+          for (let i = 0; i < activeMask.length; i += 16) {
+            if (activeMask[i] > 100) {
+              hasPersonInMask = true;
+              break;
+            }
+          }
+        }
+
+        const hasVisitors = trackedPeople.length > 0 || trackedHands.length > 0 || hasPersonInMask;
 
         // Attract mode timing
         if (hasVisitors) {
@@ -548,6 +700,54 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
           }
         });
 
+        // Hand Rhythm Layer (Mechanic Row 9): Hand plays paragraph on 16th grid (84 BPM)
+        if (mechanicsSwitches.handRhythm && mechanicsSwitches.sound) {
+          const nowMs = performance.now();
+          trackedHands.forEach((hand, handIdx) => {
+            if (!hand.active) return;
+            const hx = hand.palmX * displayWidth;
+            const hy = hand.palmY * displayHeight;
+
+            if (hand.speed >= 0.04) {
+              lastHandMoveTimeRef.current[hand.id] = nowMs;
+            }
+
+            const isStill = nowMs - (lastHandMoveTimeRef.current[hand.id] || 0) > cfg.rhythmStillnessTimeoutMs;
+            if (isStill) return; // Hand still = silence within 300ms
+
+            // Find closest letter under hand
+            let closestChar: CharacterItem | null = null;
+            let minDist = hand.isFist ? cfg.fistRadius : (cfg.openPalmRadius * 0.85);
+
+            for (let l = 0; l < lines.length; l++) {
+              const lineChars = lines[l];
+              for (let c = 0; c < lineChars.length; c++) {
+                const ch = lineChars[c];
+                const dist = Math.hypot(ch.x - hx, ch.y - hy);
+                if (dist < minDist) {
+                  minDist = dist;
+                  closestChar = ch;
+                }
+              }
+            }
+
+            if (closestChar && closestChar.charIndex !== prevHandNearestCharIdRef.current[hand.id]) {
+              prevHandNearestCharIdRef.current[hand.id] = closestChar.charIndex;
+              audioEngine.triggerHandRhythmHit({
+                handIndex: handIdx,
+                xNorm: hand.palmX,
+                speed: hand.speed,
+                letterWeight: closestChar.currentWght,
+                word: closestChar.word,
+                isHeavyWord: Boolean(closestChar.isHeavyWord),
+                isLightWord: Boolean(closestChar.isLightWord),
+                isFist: Boolean(hand.isFist),
+                isDrop: false
+              });
+            }
+          });
+        }
+
         // Add Head
         if (mechanicsSwitches.headTracking) {
           trackedPeople.forEach((person) => {
@@ -625,14 +825,16 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
 
             // 3. Phase 0 Residue Update (Capped at wght +150 above resting weight)
             if (mechanicsSwitches.residue) {
-              if (mergedMaxInfluence > 0.05) {
+              // Accumulate only under deliberate active influence (> 0.18) to ignore camera background noise
+              if (mergedMaxInfluence > cfg.residueInfluenceThreshold) {
                 ch.residue = Math.min(1.0, ch.residue + mergedMaxInfluence * cfg.residueAccumulationRate * dtSec);
               }
+              // Continuous global half-life decay
               ch.residue *= residueDecayFactor;
 
-              // Phase 0: Slow pull of resting mean toward ~230-250 when quiet
-              if (mechanicsSwitches.contrastGuard && ambientFactor > 0.4) {
-                ch.residue *= Math.pow(0.96, dtSec);
+              // Phase 0 Contrast Guard: Active pull restoring resting mean toward 200-260w
+              if (mechanicsSwitches.contrastGuard) {
+                ch.residue *= Math.exp(-cfg.idleMeanPullRate * dtSec);
               }
             } else {
               ch.residue = 0;
@@ -778,6 +980,12 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
             ch.currentWght = Math.max(cfg.baseWght, Math.min(cfg.maxWght, ch.currentWght));
             ch.currentWdth = Math.max(cfg.baseWdth, Math.min(cfg.maxWdth, ch.currentWdth));
 
+            // Dynamic word-envelope positioning:
+            // Resting: ch.baseX (consistent optical tracking with uniform letter-spacing)
+            // Heavy: ch.maxX (smoothly expands to fill the word's maximum reserved envelope)
+            const wNorm = Math.max(0, Math.min(1, (ch.currentWght - cfg.baseWght) / (cfg.maxWght - cfg.baseWght)));
+            ch.x = (1 - wNorm) * ch.baseX + wNorm * ch.maxX;
+
             totalWghtSum += ch.currentWght;
             totalWdthSum += ch.currentWdth;
           });
@@ -787,6 +995,15 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
 
         // 2. RENDER PHASE: 100% DRAWIMAGE FROM GLYPH ATLAS CACHE (< 8ms TARGET)
         const renderStart = performance.now();
+
+        // Update layout cross-fade on resize / fullscreen
+        if (isFadingLayoutRef.current) {
+          const elapsed = performance.now() - fadeStartTimeRef.current;
+          const t = Math.min(1.0, elapsed / cfg.layoutFadeDurationMs);
+          layoutFadeAlphaRef.current = t;
+          if (t >= 1.0) isFadingLayoutRef.current = false;
+        }
+        const layoutAlpha = layoutFadeAlphaRef.current;
 
         ctx.fillStyle = cfg.backgroundColor;
         ctx.fillRect(0, 0, displayWidth, displayHeight);
@@ -806,7 +1023,7 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
 
             // Optional Residue Heatmap visualization
             if (effectiveShowResidueHeatmap && ch.residue > 0.05) {
-              ctx.fillStyle = `rgba(168, 85, 247, ${ch.residue * 0.28})`;
+              ctx.fillStyle = `rgba(168, 85, 247, ${ch.residue * 0.28 * layoutAlpha})`;
               ctx.fillRect(ch.x - ch.slotWidth / 2, ch.y - fontSize * 0.7, ch.slotWidth, fontSize * 1.1);
             }
 
@@ -834,13 +1051,13 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
             const imgLow = glyphAtlas.getGlyph(ch.char, lowWght, lowWdth, glyphColor);
 
             if (tWght < 0.05 || lowWght === highWght) {
-              ctx.globalAlpha = 1.0;
+              ctx.globalAlpha = layoutAlpha;
               ctx.drawImage(imgLow, drawX, drawY, drawW, drawH);
             } else {
               const imgHigh = glyphAtlas.getGlyph(ch.char, highWght, highWdth, glyphColor);
-              ctx.globalAlpha = 1.0 - tWght;
+              ctx.globalAlpha = layoutAlpha * (1.0 - tWght);
               ctx.drawImage(imgLow, drawX, drawY, drawW, drawH);
-              ctx.globalAlpha = tWght;
+              ctx.globalAlpha = layoutAlpha * tWght;
               ctx.drawImage(imgHigh, drawX, drawY, drawW, drawH);
             }
           });
@@ -976,6 +1193,7 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
             ? `${Math.round(headNose.x * displayWidth)}px, ${Math.round(headNose.y * displayHeight)}px`
             : 'None';
 
+          const rhythmTelemetry = audioEngine.getRhythmTelemetry();
           onTelemetryUpdate?.({
             gestureStateText: gestureText,
             handSpeedText: primaryHand ? `${primaryHand.speed.toFixed(2)}` : '0.00',
@@ -987,7 +1205,10 @@ export const TypographyCanvas = forwardRef<TypographyCanvasRef, TypographyCanvas
             droneActive: presenceFactor > 0,
             silhouetteFps: activeMask ? 18 : 0,
             silhouetteCoverage: totalCharCount > 0 ? (totalSilhouetteCoverage / totalCharCount) * 100 : 0,
-            lastDropInfo: lastDropInfoRef.current
+            lastDropInfo: lastDropInfoRef.current,
+            rhythmBpm: rhythmTelemetry.bpm,
+            rhythmVoices: rhythmTelemetry.voices,
+            lastRhythmHit: rhythmTelemetry.lastHit
           });
         }
 

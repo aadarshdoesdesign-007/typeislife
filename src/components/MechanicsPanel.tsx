@@ -238,6 +238,16 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
           onToggle={() => onToggleMechanic('sound')}
           activeColor="#eab308"
         />
+
+        {/* Mechanic Row 9: Hand Rhythm */}
+        <MechanicRow
+          title="9. Hand Rhythm Engine"
+          description="Quantized hits on 16th grid (84 BPM); knocks, ticks, thuds, kicks"
+          liveValue={`BPM: ${telemetry.rhythmBpm} | Voices: ${telemetry.rhythmVoices} / 6 | Hit: ${telemetry.lastRhythmHit}`}
+          isActive={mechanicsSwitches.handRhythm}
+          onToggle={() => onToggleMechanic('handRhythm')}
+          activeColor="#ec4899"
+        />
       </div>
 
       {/* SECTION 2: WALL VISUALIZATION OVERLAYS */}

@@ -11,6 +11,10 @@ export type CharacterItem = {
   lineIndex: number;
   x: number;
   y: number;
+  baseX: number; // Resting position with consistent optical tracking
+  maxX: number;  // Position inside word when fully weighted (900/125)
+  wordStartX: number;
+  wordMaxW: number;
   slotWidth: number;
   currentWght: number;
   targetWght: number;
@@ -124,6 +128,7 @@ export interface MechanicsSwitches {
   attractMode: boolean;
   sound: boolean;
   hands: boolean;
+  handRhythm: boolean;
 }
 
 export interface WallVisualizations {
@@ -145,4 +150,7 @@ export interface MechanicsLiveTelemetry {
   silhouetteFps: number;
   silhouetteCoverage: number;
   lastDropInfo: string;
+  rhythmBpm: number;
+  rhythmVoices: number;
+  lastRhythmHit: string;
 }
